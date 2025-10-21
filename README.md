@@ -4,7 +4,7 @@
 
 ### Overview
 
-This repository, **ParallelOptimizationEngine**, serves as a comprehensive, professional-grade hybrid codebase designed to simulate multi-agent optimization within an intelligence fabric framework. It directly addresses the assigned task of creating a parallel optimization engine, where multiple agents collaboratively minimize a global quadratic cost function defined as $\(\sum_{i=1}^N a_i (x - b_i)^2\)$. Here, each $\(a_i > 0\)$ ensures convexity, while $\(b_i\)$ can be unbounded, with coefficients randomly generated for realism in simulation.
+This repository, **ParallelOptimizationEngine**, serves as a comprehensive, professional-grade hybrid codebase designed to simulate multi-agent optimization within an intelligence fabric framework. It directly addresses the assigned task of creating a parallel optimization engine, where multiple agents collaboratively minimize a global quadratic cost function defined as $\sum_{i=1}^N a_i (x - b_i)^2$. Here, each $a_i > 0$ ensures convexity, while $b_i$ can be unbounded, with coefficients randomly generated for realism in simulation.
 
 The system exemplifies efficient integration of C++, CUDA, and Python, leveraging parallel processing across CPU threads and GPU kernels, alongside AI-driven reasoning via machine learning for gradient predictions (as a bonus feature). Emphasizing scalability, modularity, and performance, the codebase incorporates rigorous mathematical derivations, hardware-aware execution, and visualization tools. It is optimized for high-performance computing (HPC) environments, demonstrating convergence in multi-agent consensus while comparing naive and collaborative methods.
 
@@ -21,9 +21,9 @@ Key components include:
   - Factory for dynamic engine creation based on mode and hardware.
   - Facade for a unified, user-friendly Python interface.
 - **Axon Layer Simulation**: Represents inter-agent communication through shared memory (CPU), device arrays (GPU), or learned approximations (ML), mimicking neural signaling in an intelligence fabric.
-- **Outputs and Metrics**: Detailed metrics such as final $\(x\)$, global cost, iteration count, and execution time; accompanied by bar charts visualizing runtime, convergence speed, and accuracy across modes.
+- **Outputs and Metrics**: Detailed metrics such as final $x$, global cost, iteration count, and execution time; accompanied by bar charts visualizing runtime, convergence speed, and accuracy across modes.
 
-The codebase adheres to high standards of rigor: All computations use double precision for numerical stability, convexity is enforced via safeguards (e.g., $\(a_i > 0\)$), and inline comments provide mathematical derivations, such as the gradient $\(\nabla f_i(x) = 2 a_i (x - b_i)\)$, derived from the quadratic form.
+The codebase adheres to high standards of rigor: All computations use double precision for numerical stability, convexity is enforced via safeguards (e.g., $a_i > 0$), and inline comments provide mathematical derivations, such as the gradient $\nabla f_i(x) = 2 a_i (x - b_i)$, derived from the quadratic form.
 
 This project not only meets the assignment's evaluation criteria—emphasizing computational efficiency, algorithmic thinking, code quality, scientific rigor, and innovation—but also positions itself as an extensible foundation for further HPC and AI research.
 
@@ -136,12 +136,12 @@ Post-installation, the system is ready for simulation runs.
 
 ### Code Explanation: What It Does
 
-The codebase simulates $\(N\)$ agents, each with a local quadratic cost $\(f_i(x) = a_i (x - b_i)^2\)$, optimizing a shared variable $\(x\)$ to minimize the global sum. Agents are generated randomly with $\(a_i \in [0.5, 2.0]\)$ (ensuring positivity) and $\(b_i \sim \mathcal{N}(0,1)\)$.
+The codebase simulates $N$ agents, each with a local quadratic cost $f_i(x) = a_i (x - b_i)^2$, optimizing a shared variable $x$ to minimize the global sum. Agents are generated randomly with $a_i \in [0.5, 2.0]$ (ensuring positivity) and $b_i \sim \mathcal{N}(0,1)$.
 
-- **Agent Model** (Agent.hpp/cpp): Encapsulates cost evaluation, gradient computation ($\(2 a_i (x - b_i)\)$), and local minimum ($\(x = b_i\)$). Includes generation utilities for scalability testing.
+- **Agent Model** (Agent.hpp/cpp): Encapsulates cost evaluation, gradient computation ($2 a_i (x - b_i)$), and local minimum ($x = b_i$). Includes generation utilities for scalability testing.
 - **Optimization Methods**:
-  - **Naive**: Computes local minima independently and averages them ($\(x^* = \frac{1}{N} \sum b_i\)$); fast but ignores weights $\(a_i\)$, leading to suboptimal accuracy.
-  - **Collaborative**: Uses iterative gradient descent where agents share gradients via an "Axon layer" (simulated communication), computing average gradient and updating $\(x \leftarrow x - \eta \cdot \overline{\nabla f}\)$, with $\(\eta = 0.01\)$ (hardcoded, tunable).
+  - **Naive**: Computes local minima independently and averages them ($x^* = \frac{1}{N} \sum b_i$); fast but ignores weights $a_i$, leading to suboptimal accuracy.
+  - **Collaborative**: Uses iterative gradient descent where agents share gradients via an "Axon layer" (simulated communication), computing average gradient and updating $x \leftarrow x - \eta \cdot \overline{\nabla f}$, with $\eta = 0.01$ (hardcoded, tunable).
 - **Variants**:
   - CPU: Sequential for baselines; multi-threaded for parallelism in gradient summation.
   - GPU: Leverages CUDA for agent-parallel computations.
@@ -153,7 +153,7 @@ The codebase simulates $\(N\)$ agents, each with a local quadratic cost $\(f_i(x
 - **Runtime Workflow**: `run_simulation.py` parses user arguments, generates agents, selects mode/hardware (auto-detection via `torch.cuda.is_available()`), executes optimizations, computes metrics, and visualizes.
 - **Patterns Integration**: Ensures loose coupling—e.g., strategies can be swapped without altering core logic.
 
-Mathematically, the global minimum is $\(x^* = \frac{\sum a_i b_i}{\sum a_i}\)$, derived from setting $\(\nabla F(x) = 0\)$.
+Mathematically, the global minimum is $x^* = \frac{\sum a_i b_i}{\sum a_i}$, derived from setting $\nabla F(x) = 0$.
 
 ### Design Patterns Explained
 
@@ -166,7 +166,7 @@ These patterns align with best practices for HPC software, ensuring the codebase
 
 ### Parallelization Explained
 
-Parallelism is core to performance, scaling with $\(N\)$:
+Parallelism is core to performance, scaling with $N$:
 - **CPU Parallelism**: Employs a custom `ThreadPool` (`threadpool.hpp`) with work-stealing queues and fixed threads (equal to hardware concurrency). In `CollaborativeStrategy`, gradients are enqueued per agent (`pool.enqueue([&agent, x]() { return agent.gradient(x); }`)), results aggregated via futures. This avoids overhead, providing efficient data-parallelism with low contention.
 - **GPU Parallelism**: CUDA kernels (`kernel.cu`) assign one thread per agent for gradient computation; a reduction kernel sums results atomically or via tree-based algorithms. Host code (`CudaEngine.cu`) allocates device memory, launches kernels (e.g., `<<<blocks, threads>>>`), synchronizes, and checks errors (cudaGetLastError). Scales to thousands of agents with high throughput.
 - **ML Parallelism**: PyTorch leverages tensor parallelism on GPU (if detected) or CPU. Operations like forward passes and training use batched, vectorized computations; autograd handles gradient flows efficiently without explicit threading.
@@ -178,9 +178,9 @@ These approaches ensure optimal resource utilization, with fallbacks for non-GPU
 As a bonus, the ML variant integrates AI for gradient prediction, simulating intelligent agent behavior:
 - **Model Architecture** (`ml_agent.py`): A shallow feedforward network (input:1, hidden:10 with ReLU, output:1) using PyTorch.
 - **Usage**:
-  - In collaborative mode: Trains on synthetic data (e.g., sampled $\(x\)$ and true average gradients) to approximate $\(\overline{\nabla f}(x)\)$.
-  - In naive mode: Predicts mean $\(b_i\)$ as a placeholder (extendable to more complex predictions).
-- **Training Details**: MSE loss, Adam optimizer ($\(\eta = 0.01\)$), 100 epochs on generated datasets. Device auto-selected (GPU preferred for speed).
+  - In collaborative mode: Trains on synthetic data (e.g., sampled $x$ and true average gradients) to approximate $\overline{\nabla f}(x)$.
+  - In naive mode: Predicts mean $b_i$ as a placeholder (extendable to more complex predictions).
+- **Training Details**: MSE loss, Adam optimizer ($\eta = 0.01$), 100 epochs on generated datasets. Device auto-selected (GPU preferred for speed).
 - **Rationale and Trade-offs**: Mimics an "AI agent loop" by trading exact computation for approximation, potentially reducing iterations but introducing error in cost. Useful for large-scale simulations where precision is secondary to speed.
 
 Tune hyperparameters (e.g., epochs, layers) for better accuracy in production.
@@ -209,7 +209,7 @@ Output: Console prints metrics per variant (e.g., "Final x: 0.123, Cost: 1.234, 
 
 - **Hardware Dependencies**: GPU mode requires NVIDIA GPU and CUDA; auto-mode falls back gracefully to CPU.
 - **ML Limitations**: Proof-of-concept—approximation errors possible; extend training data/epochs for refinement.
-- **Performance Factors**: Large \(N\) (>10K) or tight tolerance may extend runtime; monitor for divergence (tune step size in code if needed).
+- **Performance Factors**: Large N (>10K) or tight tolerance may extend runtime; monitor for divergence (tune step size in code if needed).
 - **Platform Support**: Optimized for Linux/macOS; Windows/WSL may require adjustments (e.g., CUDA setup).
 - **Numerical Stability**: Convexity enforced, but extreme random coefficients could affect convergence—seed control available in utils.
 - **Extensions**: For production, consider adaptive learning rates or distributed MPI for multi-node scaling.
