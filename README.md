@@ -138,7 +138,7 @@ Post-installation, the system is ready for simulation runs.
 
 The codebase simulates $N$ agents, each with a local quadratic cost $f_i(x) = a_i (x - b_i)^2$, optimizing a shared variable $x$ to minimize the global sum. Agents are generated randomly with $a_i \in [0.5, 2.0]$ (ensuring positivity) and $b_i \sim \mathcal{N}(0,1)$.
 
-- **Agent Model** (Agent.hpp/cpp): Encapsulates cost evaluation, gradient computation ($2 a_i (x - b_i)$), and local minimum ($x = b_i$). Includes generation utilities for scalability testing.
+- **Agent Model** (Agent.hpp/cpp): Encapsulates cost evaluation, gradient computation ( $2 a_i (x - b_i)$ ), and local minimum ( $x = b_i$ ). Includes generation utilities for scalability testing.
 - **Optimization Methods**:
   - **Naive**: Computes local minima independently and averages them ($x^* = \frac{1}{N} \sum b_i$); fast but ignores weights $a_i$, leading to suboptimal accuracy.
   - **Collaborative**: Uses iterative gradient descent where agents share gradients via an "Axon layer" (simulated communication), computing average gradient and updating $x \leftarrow x - \eta \cdot \overline{\nabla f}$, with $\eta = 0.01$ (hardcoded, tunable).
