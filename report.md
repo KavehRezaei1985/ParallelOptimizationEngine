@@ -71,7 +71,7 @@ All modes are exposed via `binding.cpp` to Python, with auto-detection (`torch.c
 ## Summary of Performance Results
 Performance evaluated across $N = 100, 1000, 10000$ agents using `run_simulation.py --method=both --mode=all`. Raw data from `performance_data.csv`; visualized in **Figure 1** (`scaling.png`).
 
-![Figure 1: Performance Scaling Across Methods and Modes]
+![Figure 1: Performance Scaling Across Methods and Modes](https://github.com/user-attachments/assets/6f20e4ef-4b6c-4eec-863e-80a4c347812c)
 
 *Figure 1: Log-log plots showing (a) Iterations vs. N, (b) Wall-clock time (s) vs. N, (c) Accuracy gap ($|x - x^*|$) vs. N, and (d) Speedup (vs. CPU sequential) vs. N. Collaborative modes show sublinear iteration growth and ~5x speedup at $N=10k$. Naive is fast but inaccurate. ML inference is quick but error grows with $N$.*
 
