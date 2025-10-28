@@ -141,7 +141,7 @@ The `Dockerfile` provides a self-contained, reproducible environment for buildin
    ```bash
    docker run --gpus all --rm -v $(pwd)/python:/app/python poe:latest
    ```
-   - Runs with **default args**: `--method=both --mode=all --N=100,1000,10000`.
+   - Runs with **default args**: `--method=both --mode=all`.
    - Interactive plots **will not open** (headless container), but `interactive_plots.html` is saved.
    - Pass custom args:
      ```bash
@@ -158,7 +158,7 @@ The `Dockerfile` provides a self-contained, reproducible environment for buildin
 Post-installation, the system is ready for simulation runs.
 
 ### Methods Explained
-The **ParallelOptimizationEngine** is fundamentally designed to solve a distributed optimization problem where **N independent agents** each possess a private quadratic cost function of the form \( f_i(x) = a_i (x - b_i)^2 \), with the collective objective being to minimize the **global aggregate cost** defined as \( F(x) = \sum_{i=1}^N a_i (x - b_i)^2 \). Since every \( a_i > 0 \), the function \( F(x) \) is **strongly convex**, which guarantees the existence of a **unique global minimizer** located at the closed-form solution \( x^* = \frac{\sum_{i=1}^N a_i b_i}{\sum_{i=1}^N a_i} \). This analytical optimum serves as the ground truth against which all algorithmic results are rigorously evaluated throughout the system.
+The **ParallelOptimizationEngine** is fundamentally designed to solve a distributed optimization problem where **N independent agents** each possess a private quadratic cost function of the form $f_i(x) = a_i (x - b_i)^2$, with the collective objective being to minimize the **global aggregate cost** defined as $F(x) = \sum_{i=1}^N a_i (x - b_i)^2$. Since every $a_i > 0$, the function $F(x)$ is **strongly convex**, which guarantees the existence of a **unique global minimizer** located at the closed-form solution $x^* = \frac{\sum_{i=1}^N a_i b_i}{\sum_{i=1}^N a_i}$. This analytical optimum serves as the ground truth against which all algorithmic results are rigorously evaluated throughout the system.
 
 Two contrasting optimization strategies are implemented within the engine — the **Naive method** and the **Collaborative method** — each embodying a fundamentally different philosophy regarding how agents should interact, how information should be aggregated, and how computational resources should be allocated to achieve either speed or precision.
 
@@ -166,42 +166,42 @@ Two contrasting optimization strategies are implemented within the engine — th
 
 #### **Naive Method: Unweighted Local Averaging**
 
-The Naive method operates under the simplifying assumption that **all agents contribute equally to the final decision**, regardless of the magnitude of their individual cost coefficients \( a_i \). This approach is inspired by scenarios where rapid decision-making is prioritized over optimal accuracy, such as in real-time embedded systems or initial prototyping phases of larger algorithms.
+The Naive method operates under the simplifying assumption that **all agents contribute equally to the final decision**, regardless of the magnitude of their individual cost coefficients $a_i$. This approach is inspired by scenarios where rapid decision-making is prioritized over optimal accuracy, such as in real-time embedded systems or initial prototyping phases of larger algorithms.
 
 ##### **Detailed Algorithmic Workflow**
 
 1. **Local Minimization Phase**:  
-   For each agent \( i \), the method begins by solving the **individual optimization subproblem** \( \min_x f_i(x) = a_i (x - b_i)^2 \). Taking the derivative with respect to \( x \) yields \( \nabla f_i(x) = 2 a_i (x - b_i) \), and setting this equal to zero immediately gives the **local optimum** \( x_i^* = b_i \). Thus, every agent independently identifies its **preferred operating point** as its own \( b_i \) value, requiring no communication or coordination at this stage.
+   For each agent $i$, the method begins by solving the **individual optimization subproblem** $\min_x f_i(x) = a_i (x - b_i)^2$. Taking the derivative with respect to $x$ yields $\nabla f_i(x) = 2 a_i (x - b_i)$, and setting this equal to zero immediately gives the **local optimum** $x_i^* = b_i$. Thus, every agent independently identifies its **preferred operating point** as its own $b_i$ value, requiring no communication or coordination at this stage.
 
 2. **Global Aggregation Phase**:  
-   Once all local optima \( \{b_1, b_2, \dots, b_N\} \) have been computed, the method performs a **simple arithmetic mean** across all agents:
-   \[
-   x_{\text{naive}} = \frac{1}{N} \sum_{i=1}^N b_i = \bar{b}
-   \]
-   This step represents the **only communication event** in the entire algorithm — a single broadcast of the \( b_i \) values followed by a centralized or distributed reduction to compute the average.
+   Once all local optima $\{b_1, b_2, \dots, b_N\}$ have been computed, the method performs a **simple arithmetic mean** across all agents:
+   
+   $$x_{\text{naive}} = \frac{1}{N} \sum_{i=1}^N b_i = \bar{b}$$
+   
+   This step represents the **only communication event** in the entire algorithm — a single broadcast of the $b_i$ values followed by a centralized or distributed reduction to compute the average.
 
 ##### **Mathematical Properties and Limitations**
 
-- **Closed-Form Expression**: The final solution is nothing more than the **sample mean of the \( b_i \) values**, completely independent of the cost weights \( a_i \).
-- **Systematic Bias**: When the \( a_i \) coefficients vary significantly, agents with **small \( a_i \) (weak cost functions)** exert **disproportionate influence** on the final \( x \), pulling it away from the true weighted optimum \( x^* \). The error term can be expressed as:
-  \[
-  x_{\text{naive}} - x^* = \bar{b} - \frac{\sum a_i b_i}{\sum a_i}
-  \]
-  This deviation grows with the **variance of \( a_i \)** and can be substantial in heterogeneous agent populations.
-- **Suboptimality in Objective Value**: The resulting \( x_{\text{naive}} \) always satisfies \( F(x_{\text{naive}}) \geq F(x^*) \), with equality **only when all \( a_i \) are identical**.
+- **Closed-Form Expression**: The final solution is nothing more than the **sample mean of the $b_i$ values**, completely independent of the cost weights $a_i$.
+- **Systematic Bias**: When the $a_i$ coefficients vary significantly, agents with **small $a_i$ (weak cost functions)** exert **disproportionate influence** on the final $x$, pulling it away from the true weighted optimum $x^*$. The error term can be expressed as:
+- 
+  $$x_{\text{naive}} - x^* = \bar{b} - \frac{\sum a_i b_i}{\sum a_i}$$
+  
+  This deviation grows with the **variance of $ a_i $** and can be substantial in heterogeneous agent populations.
+- **Suboptimality in Objective Value**: The resulting $x_{\text{naive}}$ always satisfies $F(x_{\text{naive}}) \geq F(x^*)$, with equality **only when all $a_i$ are identical**.
 
 ##### **Computational and Communication Profile**
 
 | Characteristic | Value |
 |----------------|-------|
-| **Time Complexity** | \( O(N) \) total (one pass over agents) |
+| **Time Complexity** | $O(N)$ total (one pass over agents) |
 | **Iteration Count** | **1** (non-iterative) |
-| **Communication Rounds** | **1** (final \( b_i \) aggregation) |
-| **Memory Footprint** | \( O(N) \) for storing \( b_i \) |
+| **Communication Rounds** | **1** (final $b_i$ aggregation) |
+| **Memory Footprint** | $O(N)$ for storing $b_i$ |
 
 ##### **Parallel Implementation**
 
-The method is **embarrassingly parallel** in the aggregation phase: summation of \( b_i \) can be distributed across ThreadPool workers, OpenMP parallel loops, CUDA thread blocks, or even approximated via ML-based mean prediction.
+The method is **embarrassingly parallel** in the aggregation phase: summation of $b_i$ can be distributed across ThreadPool workers, OpenMP parallel loops, CUDA thread blocks, or even approximated via ML-based mean prediction.
 
 > **Ideal Use Case**: Systems requiring **ultra-low latency**, **minimal bandwidth**, or **rough initial estimates** for subsequent refinement.
 
@@ -209,80 +209,80 @@ The method is **embarrassingly parallel** in the aggregation phase: summation of
 
 #### **Collaborative Method: Consensus-Based Gradient Descent**
 
-The Collaborative method embodies a **distributed consensus protocol** wherein agents **continuously exchange gradient information** to iteratively refine a **shared estimate** of the global minimizer \( x^* \). This approach mirrors natural multi-agent systems (e.g., flocking, sensor fusion) and distributed control paradigms.
+The Collaborative method embodies a **distributed consensus protocol** wherein agents **continuously exchange gradient information** to iteratively refine a **shared estimate** of the global minimizer $x^*$. This approach mirrors natural multi-agent systems (e.g., flocking, sensor fusion) and distributed control paradigms.
 
 ##### **Detailed Algorithmic Workflow**
 
 1. **Initialization**:  
-   The shared variable begins at an arbitrary starting point, typically \( x_0 = 0 \), though any initial guess is valid due to convexity.
+   The shared variable begins at an arbitrary starting point, typically $x_0 = 0$, though any initial guess is valid due to convexity.
 
-2. **Iterative Update Loop (\( k = 1, 2, \dots \))**:  
-   - **Local Gradient Computation**: Each agent \( i \) evaluates its **instantaneous gradient** at the current global estimate:
-     \[
-     g_i^{(k)} = \nabla f_i(x_k) = 2 a_i (x_k - b_i)
-     \]
-     This represents how much agent \( i \) "wants" to move \( x_k \) toward its preferred \( b_i \), scaled by its influence \( a_i \).
+2. **Iterative Update Loop ($k = 1, 2, \dots$)**:  
+   - **Local Gradient Computation**: Each agent $i$ evaluates its **instantaneous gradient** at the current global estimate:
+   - 
+     $$g_i^{(k)} = \nabla f_i(x_k) = 2 a_i (x_k - b_i)$$
+     
+     This represents how much agent $i$ "wants" to move $x_k$ toward its preferred $b_i$, scaled by its influence $a_i$.
    - **Global Gradient Aggregation** (via simulated "Axon Layer"):  
      Agents transmit their local gradients, which are **summed** across the population:
-     \[
-     S^{(k)} = \sum_{i=1}^N g_i^{(k)} = 2 \sum_{i=1}^N a_i (x_k - b_i)
-     \]
-     **Note**: Only the **sum** \( S^{(k)} \) is required — no averaging is performed. This sum is **exactly the gradient of the global cost**:
-     \[
-     \nabla F(x_k) = 2 \sum_{i=1}^N a_i (x_k - b_i) \quad \Rightarrow \quad S^{(k)} = \nabla F(x_k)
-     \]
+     
+     $$S^{(k)} = \sum_{i=1}^N g_i^{(k)} = 2 \sum_{i=1}^N a_i (x_k - b_i)$$
+     
+     **Note**: Only the **sum** $S^{(k)}$ is required — no averaging is performed. This sum is **exactly the gradient of the global cost**:
+     
+     $$\nabla F(x_k) = 2 \sum_{i=1}^N a_i (x_k - b_i) \quad \Rightarrow \quad S^{(k)} = \nabla F(x_k)$$
+     
    - **Consensus Update**: The shared estimate is updated using a **diminishing step size**:
-     \[
-     x_{k+1} = x_k - \eta_k \cdot S^{(k)}, \quad \eta_k = \frac{\eta_0}{k}, \quad \eta_0 = 0.01
-     \]
+   - 
+     $$x_{k+1} = x_k - \eta_k \cdot S^{(k)}, \quad \eta_k = \frac{\eta_0}{k}, \quad \eta_0 = 0.01$$
+     
      This is equivalent to:
-     \[
-     x_{k+1} = x_k - \frac{2 \eta_0}{k} \sum_{i=1}^N a_i (x_k - b_i)
-     \]
-     **Step size design**: The base step size \( \eta_0 = 0.01 \) is fixed and **independent of \( N \)**, ensuring consistent update magnitude regardless of system size. This prevents **instability** in large-scale systems while maintaining **robust convergence**.
+     
+     $$x_{k+1} = x_k - \frac{2 \eta_0}{k} \sum_{i=1}^N a_i (x_k - b_i)$$
+     
+     **Step size design**: The base step size $\eta_0 = 0.01$ is fixed and **independent of $N$**, ensuring consistent update magnitude regardless of system size. This prevents **instability** in large-scale systems while maintaining **robust convergence**.
 
 3. **Termination Condition**:  
-   The loop halts when the **change in \( x \)** falls below a tolerance:
-   \[
-   \|x_{k+1} - x_k\| < \epsilon = 10^{-6}
-   \]
-   A hard cap of **10,000 iterations** prevents infinite loops in edge cases.
+   The loop halts when the **change in $x$** falls below a tolerance:
+   
+   $$\|x_{k+1} - x_k\| < \epsilon = 10^{-9}$$
+   
+   A hard cap of **1000,000 iterations** prevents infinite loops in edge cases.
 
 ##### **Convergence Theory and Proof Sketch**
 
-The algorithm is a **deterministic gradient descent** on the global objective \( F(x) \), but executed in a **decentralized manner**.
+The algorithm is a **deterministic gradient descent** on the global objective $F(x)$, but executed in a **decentralized manner**.
 
-- **Lipschitz Smoothness**: \( F(x) \) has gradient Lipschitz constant \( L = 2 \sum a_i \).
-- **Strong Convexity**: \( F(x) \) is \( \mu \)-strongly convex with \( \mu = 2 \min a_i \).
-- **Step Size Condition**: \( \eta_k = \frac{\eta_0}{k} \) satisfies the **Robbins-Monro conditions** for convergence:
-  \[
-  \sum_{k=1}^\infty \eta_k = \infty, \quad \sum_{k=1}^\infty \eta_k^2 < \infty
-  \]
+- **Lipschitz Smoothness**: $F(x)$ has gradient Lipschitz constant $L = 2 \sum a_i$.
+- **Strong Convexity**: $F(x)$ is $\mu$-strongly convex with $\mu = 2 \min a_i$.
+- **Step Size Condition**: $\eta_k = \frac{\eta_0}{k}$ satisfies the **Robbins-Monro conditions** for convergence:
+- 
+  $$\sum_{k=1}^\infty \eta_k = \infty, \quad \sum_{k=1}^\infty \eta_k^2 < \infty$$
+  
 
 - **Convergence Result** (Polyak & Juditsky, 1992):  
-  For strongly convex \( F \) with diminishing steps, the iterates satisfy:
-  \[
-  F(\bar{x}_K) - F(x^*) \leq O\left(\frac{1}{K}\right)
-  \]
-  where \( \bar{x}_K \) is the averaged iterate. In practice, **unaveraged \( x_k \) converges linearly** due to strong convexity.
+  For strongly convex $F$ with diminishing steps, the iterates satisfy:
+  
+  $$F(\bar{x}_K) - F(x^*) \leq O\left(\frac{1}{K}\right)$$
+  
+  where $\bar{x}_K$ is the averaged iterate. In practice, **unaveraged $x_k$ converges linearly** due to strong convexity.
 
-- **Practical Behavior**: For \( N \in [100, 10000] \), convergence typically occurs in **50–1000 iterations**, scaling **sublinearly** with \( N \).
+- **Practical Behavior**: For $N \in [100, 10000]$, convergence typically occurs in **50–1000 iterations**, scaling **sublinearly** with $N$.
 
 ##### **Computational and Communication Profile**
 
 | Characteristic | Value |
 |----------------|-------|
-| **Time Complexity** | \( O(T \cdot N) \), \( T \approx \log N \) |
+| **Time Complexity** | $O(T \cdot N)$, $T \approx \log N$ |
 | **Iteration Count** | 50–1000 |
-| **Communication Rounds** | \( T \) (sum of gradients per round) |
-| **Memory Footprint** | \( O(N) \) |
+| **Communication Rounds** | $T$ (sum of gradients per round) |
+| **Memory Footprint** | $O(N)$ |
 
 ##### **Parallel Implementation**
 
 - **Per Iteration**:
   - Gradient computation: **embarrassingly parallel**
-  - Reduction: **parallel sum** of \( g_i \) (ThreadPool futures, OpenMP reduction, CUDA tree reduction)
-- **ML Variant**: Bypasses loop entirely by **directly predicting \( x^* \)** via a trained neural network.
+  - Reduction: **parallel sum** of $g_i$ (ThreadPool futures, OpenMP reduction, CUDA tree reduction)
+- **ML Variant**: Bypasses loop entirely by **directly predicting $x^*$** via a trained neural network.
 
 > **Ideal Use Case**: **High-fidelity scientific simulations**, **distributed sensor networks**, **autonomous systems requiring provable optimality**.
 
@@ -292,11 +292,11 @@ The algorithm is a **deterministic gradient descent** on the global objective \(
 
 | Dimension | Naive Method | Collaborative Method |
 |---------|--------------|----------------------|
-| **Final Solution** | \( \bar{b} \) (mean of \( b_i \)) | \( x^* = \frac{\sum a_i b_i}{\sum a_i} \) |
-| **Accuracy** | Biased; error grows with \( \text{Var}(a_i) \) | Exact within \( 10^{-9} \) |
-| **Convergence** | Instant (1 step) | Sublinear \( O(1/k) \) |
-| **Communication** | 1 round | \( T \approx \log N \) rounds |
-| **Computation** | \( O(N) \) | \( O(T \cdot N) \) |
+| **Final Solution** | $\bar{b}$ (mean of $b_i$) | $x^* = \frac{\sum a_i b_i}{\sum a_i}$ |
+| **Accuracy** | Biased; error grows with $\text{Var}(a_i)$ | Exact within $10^{-9}$ |
+| **Convergence** | Instant (1 step) | Sublinear $O(1/k)$ |
+| **Communication** | 1 round | $T \approx \log N$ rounds |
+| **Computation** | $O(N)$ | $O(T \cdot N)$ |
 | **Scalability** | Excellent (constant time) | Good (logarithmic iterations) |
 | **Best For** | **Speed-critical, approximate** | **Accuracy-critical, consensus** |
 
@@ -304,8 +304,8 @@ The algorithm is a **deterministic gradient descent** on the global objective \(
 
 #### **Intuitive Analogy**
 
-- **Naive** = **Democratic vote**: Every agent gets one vote, regardless of "importance" (\( a_i \)).
-- **Collaborative** = **Weighted parliament**: Agents with higher \( a_i \) have louder voices, and debate continues until agreement.
+- **Naive** = **Democratic vote**: Every agent gets one vote, regardless of "importance" ($a_i$).
+- **Collaborative** = **Weighted parliament**: Agents with higher $a_i$ have louder voices, and debate continues until agreement.
 
 ---
 
