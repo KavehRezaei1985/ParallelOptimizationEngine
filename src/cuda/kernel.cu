@@ -1,119 +1,124 @@
 // src/cuda/kernel.cu
 //
-// High-performance CUDA kernels for the **ParallelOptimizationEngine** GPU backend.
-// This file implements device-side parallel computation of agent gradients and
-// efficient reduction to compute the average gradient required for consensus
-// gradient descent.
+// CUDA kernels for the **ParallelOptimizationEngine** framework.
+// Defines parallel computation kernels for gradient evaluation and reduction.
 //
-// Kernels are optimized for:
-//   • **Massive data parallelism** – one thread per agent.
-//   • **Memory coalescing** – contiguous access to `a` and `b` arrays.
-//   • **Minimal divergence** – uniform control flow across warps.
-//   • **Hierarchical reduction** – shared memory + recursive summation.
+// This file includes:
+// • computeGradientsKernel: Computes per-agent gradients.
+// • sumKernel: Performs parallel reduction of gradients or local minima.
+// • reduceBlocks: Reduces block-level sums to a final result.
 //
-// All functions are **exception-safe** and include proper synchronization
-// (`cudaDeviceSynchronize`) to ensure kernel completion before host continuation.
+// Kernels are designed for high performance with thread block synchronization
+// and shared memory usage. All operations use double precision for accuracy.
 //
-// Mathematical foundation:
-//   • Gradient per agent: \( \nabla f_i(x) = 2 a_i (x - b_i) \)
-//   • Global update: \( x \leftarrow x - \eta \cdot \frac{1}{N} \sum_i \nabla f_i(x) \)
-
+// Modified: Simplified header comments; removed optimization details (e.g., memory coalescing,
+// minimal divergence); added explicit kernel listing; removed mathematical foundation.
+// Reason: To align with project's concise documentation style (e.g., util.hpp, CudaEngine.hpp),
+// focus on core functionality, and reflect new kernel structure (sumKernel, reduceBlocks).
 #include <cuda_runtime.h>
 
+// Modified: Updated to use interleaved agents_d array and size_t N; renamed parameters.
+// Reason: To support unified memory in CudaEngine.cu, improve scalability for large N,
+// and align parameter names with host code for clarity.
 /**
  * @brief Kernel: Computes per-agent gradients in parallel.
  *
- * @param a      Device pointer to array of coefficients \( a_i \)
- * @param b      Device pointer to array of targets \( b_i \)
- * @param x      Current shared decision variable
- * @param grads  Device pointer to output gradient array
- * @param N      Number of agents
+ * @param agents_d Device pointer to interleaved agent coefficients [a0, b0, a1, b1, ...].
+ * @param N Number of agents.
+ * @param x Current decision variable.
+ * @param grad_d Device pointer to output gradient array.
  *
  * Each thread computes \( \nabla f_i(x) = 2 a_i (x - b_i) \) for its assigned agent.
- * Bounds checking ensures safety for non-divisible grid sizes.
+ * Uses interleaved data for unified memory access. Bounds checking ensures safety.
  */
-__global__ void computeGradientsKernel(double* a, double* b, double x, double* grads, int N) {
+__global__ void computeGradientsKernel(double* agents_d, size_t N, double x, double* grad_d) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < N) {
-        grads[idx] = 2.0 * a[idx] * (x - b[idx]);
+        // Modified: Access a_i, b_i from interleaved array.
+        // Reason: To support unified memory layout in CudaEngine.cu.
+        double a = agents_d[2 * idx];
+        double b = agents_d[2 * idx + 1];
+        grad_d[idx] = 2.0 * a * (x - b); // Gradient: 2 * a * (x - b)
     }
 }
 
+// Modified: Added output parameter, is_gradient flag, and fixed shared memory size;
+// simplified data loading; renamed parameters.
+// Reason: To make kernel reusable for gradients and local minima, support unified memory,
+// and simplify reduction logic for performance and clarity.
 /**
- * @brief Host function: Launches gradient computation kernel.
+ * @brief Kernel: Performs parallel reduction of gradients or local minima.
  *
- * @param d_a     Device pointer to \( a_i \) array
- * @param d_b     Device pointer to \( b_i \) array
- * @param x       Current \( x \) value
- * @param d_grads Device pointer to output gradient buffer
- * @param N       Number of agents
+ * @param input Device pointer to input data (gradients or interleaved b_i values).
+ * @param N Number of elements to reduce.
+ * @param output Device pointer to store block-level sums.
+ * @param is_gradient True for gradient reduction, false for local minima (b_i).
  *
- * Configures grid/block dimensions for optimal occupancy (256 threads/block).
- * Synchronizes device to ensure kernel completion before returning.
+ * Uses shared memory for tree-based reduction within each block. Supports both
+ * gradient sums (collaborative mode) and local minima sums (naive mode) via
+ * is_gradient flag, accessing interleaved data when is_gradient=false.
  */
-void cudaKernelComputeGradients(double* d_a, double* d_b, double x, double* d_grads, int N) {
-    int blockSize = 256;
-    int numBlocks = (N + blockSize - 1) / blockSize;
-    computeGradientsKernel<<<numBlocks, blockSize>>>(d_a, d_b, x, d_grads, N);
-    cudaDeviceSynchronize();
-}
-
-/**
- * @brief Kernel: Parallel reduction using shared memory and warp unrolling.
- *
- * @param d_data Input/output device array (overwritten in-place during reduction)
- * @param N      Current number of elements to reduce
- *
- * Uses a **tree-based reduction** within shared memory:
- *   1. Each thread loads up to two elements (strided access).
- *   2. Cooperative reduction within block using `__syncthreads()`.
- *   3. Block result written to `d_data[blockIdx.x]`.
- *
- * Supports arbitrary input size via recursive host-side invocation.
- */
-__global__ void sumKernel(double* d_data, int N) {
-    extern __shared__ double sdata[];
-    unsigned int tid = threadIdx.x;
-    unsigned int i = blockIdx.x * (blockDim.x * 2) + tid;
-    unsigned int gridSize = blockDim.x * 2 * gridDim.x;
-    sdata[tid] = 0;
-
-    // Load up to two elements per thread with bounds checking
-    while (i < N) {
-        sdata[tid] += d_data[i] + (i + blockDim.x < N ? d_data[i + blockDim.x] : 0);
-        i += gridSize;
+__global__ void sumKernel(double* input, size_t N, double* output, bool is_gradient) {
+    // Modified: Fixed shared memory size to 256.
+    // Reason: To simplify code, as block size is fixed at 256 in CudaEngine.cu.
+    __shared__ double shared[256];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+    double sum = 0.0;
+    // Modified: Conditional loading based on is_gradient for flexibility.
+    // Reason: To support both gradient and b_i reductions, using interleaved data for naive mode.
+    if (idx < N) {
+        sum = is_gradient ? input[idx] : input[2 * idx];
     }
+    shared[tid] = sum;
     __syncthreads();
-
-    // Reduction in shared memory (unrolled for powers of two)
+    // Perform tree-based reduction in shared memory
     for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) sdata[tid] += sdata[tid + s];
+        if (tid < s) {
+            shared[tid] += shared[tid + s];
+        }
         __syncthreads();
     }
-
-    // Write block result
-    if (tid == 0) d_data[blockIdx.x] = sdata[0];
+    // Write block-level sum to output
+    if (tid == 0) {
+        // Modified: Write to output array instead of overwriting input.
+        // Reason: To avoid modifying input data, improving clarity and safety.
+        output[blockIdx.x] = shared[0];
+    }
 }
 
+// Added: New kernel to reduce block-level sums.
+// Reason: To perform final GPU-side reduction, replacing recursive host-side
+// reduction in old cudaKernelSum, improving performance by minimizing host-device
+// communication (performance addendum).
 /**
- * @brief Host function: Recursively reduces array to single sum.
+ * @brief Kernel: Reduces block-level sums to a final result.
  *
- * @param d_data Input device array (modified in-place)
- * @param d_sum  Device pointer to single-element output
- * @param N      Number of elements in current reduction step
+ * @param input Device pointer to block-level sums.
+ * @param num_blocks Number of blocks to reduce.
  *
- * Recursively launches `sumKernel` until one value remains, then copies
- * result to host-accessible `d_sum`.  Uses dynamic shared memory sizing.
+ * Reduces block-level sums from sumKernel into a single result stored in input[0].
+ * Uses shared memory for tree-based reduction within a single block.
  */
-void cudaKernelSum(double* d_data, double* d_sum, int N) {
-    int blockSize = 256;
-    int numBlocks = (N + blockSize * 2 - 1) / (blockSize * 2);
-    sumKernel<<<numBlocks, blockSize, blockSize * sizeof(double)>>>(d_data, N);
-    cudaDeviceSynchronize();
-
-    if (numBlocks > 1) {
-        cudaKernelSum(d_data, d_sum, numBlocks);
-    } else {
-        cudaMemcpy(d_sum, d_data, sizeof(double), cudaMemcpyDeviceToHost);
+__global__ void reduceBlocks(double* input, int num_blocks) {
+    __shared__ double shared[256];
+    int tid = threadIdx.x;
+    double sum = 0.0;
+    // Load block-level sum if within bounds
+    if (tid < num_blocks) {
+        sum = input[tid];
+    }
+    shared[tid] = sum;
+    __syncthreads();
+    // Perform tree-based reduction
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            shared[tid] += shared[tid + s];
+        }
+        __syncthreads();
+    }
+    // Write final result to input[0]
+    if (tid == 0) {
+        input[0] = shared[0];
     }
 }

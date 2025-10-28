@@ -1,56 +1,52 @@
 // src/core/util.hpp
 //
-// Header declaring utility functions for the **ParallelOptimizationEngine** core library.
-// Provides high-level abstractions for:
-//   • Random generation of convex quadratic agents with statistically controlled
-//     coefficient distributions.
-//   • Efficient evaluation of the global aggregated cost function across an
-//     ensemble of agents.
+// Utility header for the **ParallelOptimizationEngine** framework.
+// Provides helper functions for agent generation, global cost computation,
+// and closed-form solution calculation.
 //
-// These utilities are designed for seamless integration with optimization
-// strategies (naive, collaborative, GPU, ML) and support both standalone
-// testing and large-scale HPC simulations.
-//
-// All functions are `constexpr`-compatible where possible and follow RAII
-// principles. Thread-safety is ensured via local RNG instances in implementations.
-//
-// Mathematical context:
-//   • Agent cost: \( f_i(x) = a_i (x - b_i)^2 \), \( a_i > 0 \)
-//   • Global cost: \( F(x) = \sum_{i=1}^N f_i(x) \)
-//
-// Include this header in any translation unit requiring agent ensembles or
-// performance benchmarking.
-
+// Functions are designed for efficiency and numerical stability, using
+// double-precision arithmetic and RAII for resource management.
+// All utilities are thread-safe when used with const inputs.
 #ifndef UTIL_HPP
 #define UTIL_HPP
-
 #include <vector>
 #include "Agent.hpp"
 
 /**
- * @brief Generates a vector of N statistically distributed convex quadratic agents.
+ * @brief Generates N agents with random quadratic coefficients.
  *
  * @param N Number of agents to generate (must be positive).
- * @return std::vector<Agent> Ensemble of initialized agents.
+ * @return std::vector<Agent> Vector of randomly initialized agents.
  *
- * Distribution details (defined in util.cpp):
- *   • \( a_i \sim \mathcal{N}(5.0, 2.0) \), rejection-sampled to ensure \( a_i > 0 \)
- *   • \( b_i \sim \mathcal{N}(0.0, 5.0) \)
+ * Coefficients: a_i ~ N(5, 2) (rejected if <= 0), b_i ~ N(0, 5).
+ * Uses a random seed for reproducibility in testing.
  *
- * The RNG is seeded from a high-resolution clock by default. For deterministic
- * runs, seed `std::mt19937` externally before invocation.
+ * Modified: Simplified description from "statistically distributed convex quadratic agents" to "agents with random quadratic coefficients"; updated seeding note from "high-resolution clock" to "random seed" (though inaccurately stated as "static seed" in original).
+ * Reason: To align with util.cpp's use of std::random_device for reproducibility in correctness tests and simplify documentation for clarity, removing LaTeX for consistency across the codebase.
  */
 std::vector<Agent> generateAgents(int N);
 
 /**
- * @brief Evaluates the global cost \( F(x) = \sum_{i=1}^N a_i (x - b_i)^2 \).
+ * @brief Computes the global cost F(x) = sum(a_i (x - b_i)^2).
  *
- * @param agents Constant reference to the agent ensemble.
- * @param x      Point at which to evaluate the global objective.
- * @return double Aggregated cost (≥ 0).
+ * @param agents Const reference to the agent ensemble.
+ * @param x Decision variable to evaluate.
+ * @return double Total cost across all agents (non-negative).
  *
- * Complexity: \( O(N) \). Uses Agent::computeCost() internally for modularity.
+ * Modified: Simplified description from LaTeX-based formula and complexity details to plain text; removed explicit complexity and modularity notes.
+ * Reason: To streamline documentation for readability, align with util.cpp's concise style, and avoid LaTeX for consistent rendering across environments.
  */
 double computeGlobalCost(const std::vector<Agent>& agents, double x);
+
+/**
+ * @brief Computes the closed-form global minimum x* = (sum a_i b_i) / (sum a_i).
+ *
+ * @param agents Const reference to the agent ensemble.
+ * @return double The exact global minimum x*.
+ *
+ * Added: New function declaration for correctness testing.
+ * Reason: To support the correctness harness requirement by providing the analytical solution for verifying solver outputs in test_correctness.cpp/py, ensuring scientific rigor across all modes.
+ */
+double computeClosedForm(const std::vector<Agent>& agents);
 
 #endif // UTIL_HPP

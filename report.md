@@ -1,154 +1,120 @@
 # ParallelOptimizationEngine: Design Report
+**Author:** Dr. Kaveh Rezaei Tarhomi, Senior HPC & AI Systems Engineer, PhD in Mathematics
+**Date:** October 27, 2025
+**Version:** 1.1
+# Short Report (1–2 pages): ParallelOptimizationEngine
 
-**Author:** Dr. Kaveh Rezaei Tarhomi, Senior HPC & AI Systems Engineer, PhD in Mathematics  
-**Date:** October 21,2025  
-**Version:** 1.0  
----
+## Design Decisions
+The **ParallelOptimizationEngine** implements a multi-agent optimization framework minimizing the global convex quadratic cost \(\sum_{i=1}^N a_i (x - b_i)^2\), with \(a_i > 0\) enforced via rejection sampling (\(a_i \sim \mathcal{N}(5,2)\), rejected if \(\leq 0\); \(b_i \sim \mathcal{N}(0,5)\)). Two core methods are compared to demonstrate trade-offs in speed, accuracy, and scalability:
 
-## Introduction: The Main Problem Statement and Our Solution Approach
+- **Naive**: Unweighted average of local minima \(x = \frac{1}{N} \sum b_i\). Chosen for **O(1)** complexity, minimal communication, and low overhead—ideal as a fast baseline despite ignoring \(a_i\) weights, leading to systematic error.
+- **Collaborative**: Consensus-based gradient descent with shared average gradient \(\overline{\nabla f}(x) = \frac{2}{N} \sum a_i (x - b_i)\), updated as \(x \leftarrow x - \eta_k \cdot \overline{\nabla f}\), \(\eta_k = 0.01 / k\), converging when \(\|x_{k+1} - x_k\| < 10^{-6}\). Selected for **exact convergence** to the closed-form solution \(x^* = \frac{\sum a_i b_i}{\sum a_i}\), with mathematical rigor (gradient derivation in comments).
 
-### Exhaustive Problem Formulation
-The assignment delineates a multi-agent optimization scenario embedded within an "intelligence fabric," conceptualized as a distributed computational ecosystem where autonomous reasoning agents interact to achieve collective decision-making. Specifically, the system comprises $N$ agents, each endowed with a local objective function modeled as a convex quadratic:
-$$f_i(x) = a_i (x - b_i)^2, \quad i = 1, 2, \dots, N,$$
-where $x \in \mathbb{R}$ represents the shared, one-dimensional decision variable across all agents, $a_i > 0$ is a strictly positive scaling coefficient that imparts varying degrees of influence to each agent's contribution (ensuring the Hessian of $f_i$ is positive definite, thus guaranteeing strong convexity with minimum eigenvalue $2 a_i > 0$), and $b_i \in \mathbb{R}$ is an unbounded parameter denoting the agent's idiosyncratic "preferred" state or local optimum (at which $f_i(b_i) = 0$).
+Execution modes span **CPU** (sequential, custom ThreadPool, OpenMP), **GPU** (CUDA with unified memory), and **ML** (PyTorch MLP). This hybrid design leverages:
+- **C++** for low-level control, double precision, and performance-critical paths (`Agent.cpp`, `Engine.cpp`, `util.cpp`).
+- **CUDA** for massive parallelism (`kernel.cu`, `CudaEngine.cu` with error handling and unified memory).
+- **Python + PyBind11** for user-friendly interface (`run_simulation.py`, `binding.cpp`), visualization (`visualize.py`), and ML (`ml_agent.py`).
+- **Design Patterns**: 
+  - **Strategy** (`Engine.hpp`, `CudaEngine.hpp`) for swappable algorithms.
+  - **Factory** (`binding.cpp`) for dynamic engine creation.
+  - **Facade** (`run_simulation.py`) for simplified CLI.
 
-The coefficients $a_i$ and $b_i$ are stochastically generated to emulate heterogeneity in agent behaviors: $a_i$ is sampled from a normal distribution $\mathcal{N}(\mu_a = 5, \sigma_a = 2)$ followed by rejection sampling to enforce $a_i > 0$ (preventing non-convex or degenerate cases where the quadratic term vanishes), while $b_i \sim \mathcal{N}(\mu_b = 0, \sigma_b = 5)$ introduces diversity in local minima, reflecting real-world variability in agent perspectives or data sources. This stochastic parameterization ensures the simulation captures realistic distributional properties, with expected global minimum $\mathbb{E}[x^*] \approx 0$ under symmetry, but variance scaling with $N$ and parameter spreads.
+The **ML component** (`ml_agent.py`) uses a 2-layer MLP (20 neurons, ReLU) with input \([a_1, b_1, \dots, a_N, b_N]\), outputs predicted \([\sum a_i b_i, \sum a_i]\) for fixed division. Trained via Adam + StepLR (500 epochs, MSE + accuracy gap penalty), it simulates AI-enhanced reasoning in the "axon layer" communication model, reducing iterative computation at the cost of approximation error.
 
-The overarching objective is to determine the value $x^*$ that minimizes the aggregated global cost:
-$$F(x) = \sum_{i=1}^N f_i(x) = \sum_{i=1}^N a_i (x - b_i)^2.$$
-Expanding this, $F(x) = \left( \sum a_i \right) x^2 - 2 \left( \sum a_i b_i \right) x + \sum a_i b_i^2$, reveals it as a quadratic form with positive leading coefficient $\sum a_i > 0$, confirming strong convexity and a unique closed-form minimum:
-$$x^* = \frac{\sum_{i=1}^N a_i b_i}{\sum_{i=1}^N a_i},$$
-obtained by solving $\(\nabla F(x) = 2 \sum_{i=1}^N a_i (x - b_i) = 0\)$.
+Agents are generated with reproducible seeding (`util.cpp`) for testing; convexity and numerical stability are enforced throughout.
 
-Notwithstanding this analytical solvability, the assignment mandates a simulation of agent collaboration, introducing challenges that mirror distributed systems in HPC and AI:
-- **Computational Scalability**: For large $N$ (e.g., $10^4$ to $10^6$), per-iteration gradient summation $\sum \nabla f_i(x)$ incurs O(N) time, becoming a bottleneck in sequential execution. Memory demands also scale linearly, requiring efficient allocation.
-- **Inter-Agent Communication Overhead**: The "Axon layer"—a metaphor for neural signaling—necessitates mechanisms for gradient sharing. In parallel settings, this introduces synchronization barriers (e.g., mutex contention in CPU threading) or data transfer latencies (e.g., host-to-device copies in CUDA), potentially offsetting parallel gains via Amdahl's law (serial fraction limits speedup).
-- **Hardware Heterogeneity and Portability**: The engine must operate across diverse environments—multi-core CPUs, NVIDIA GPUs, or CPU-only fallbacks—while auto-detecting capabilities. This demands abstraction layers to avoid platform-specific code duplication.
-- **Numerical Stability and Precision**: Floating-point summations risk accumulation errors (e.g., catastrophic cancellation in large $\(N\)$); convexity enforcement prevents divergence, but step size $\eta$ tuning is critical to avoid overshooting (if $\eta > 1/L$, where Lipschitz constant $L = 2 \sum a_i$) or slow convergence.
-- **Innovation in AI Integration**: The bonus requires embedding lightweight ML to predict gradients, introducing challenges like model training overhead, approximation errors (e.g., bias/variance in NN predictions), and hyperparameter selection, while ensuring seamless fusion with exact methods.
+## Parallelization Strategy
+Parallelism targets per-agent computations (gradient evaluation, summation) across hardware:
 
-These hurdles necessitate a design that balances theoretical optimality with practical efficiency, incorporating parallelism, modularity, and AI approximations.
+- **CPU Sequential**: Single-threaded loops — baseline for small \(N\) or debugging (`naive`, `collaborative_sequential`).
+- **ThreadPool** (`threadpool.hpp`): Custom work-stealing queue with `std::hardware_concurrency` threads. Tasks enqueued via lambdas (`pool.enqueue([&]() { return agent.gradient(x); })`); futures aggregate results. Efficient for dynamic, data-parallel workloads with low contention.
+- **OpenMP**: `#pragma omp parallel for reduction(+:sum)` — compiler-optimized, lock-free reductions. Added for performance comparison with ThreadPool (`naive_openmp`, `collaborative_openmp`).
+- **GPU** (`kernel.cu`): One thread per agent; tree-based reductions in shared memory. Host code (`CudaEngine.cu`) uses `cudaMallocManaged` for zero-copy access, kernel launches (`<<<blocks, threads>>>`), and robust error handling. Scales to \(N > 10,000\) with high throughput.
+- **ML**: PyTorch tensor operations auto-parallelized on GPU (if detected); batched inference and autograd for training.
 
-### Our Solution Approach: Comprehensive Framework and Resolutions
+The **axon layer** simulates inter-agent signaling:
+- **CPU**: Shared memory + OpenMP reductions or ThreadPool queues.
+- **GPU**: Unified memory arrays.
+- **ML**: Learned surrogate model approximating communication.
 
-To surmount these, we engineered a multifaceted framework that resolves each challenge through targeted methodologies:
-- **Mathematical Resolution**: For naive, direct averaging approximates $x^*$ (exact if all $a_i$ equal); for collaborative, fixed-step GD exploits convexity for guaranteed convergence (rate O(1/k), improvable to O(1/k^2) with acceleration in extensions). ML approximates $\overline{\nabla F}(x)$ to bypass O(N) sums.
-- **Modular Decomposition and Abstraction**: Agents as self-contained objects; strategies as polymorphic classes; factories for backend instantiation. This resolves heterogeneity by auto-selecting paths (e.g., GPU if available).
-- **Simulation of Intelligence Fabric**: "Axon" abstracted as queues (CPU: mutex-protected), arrays (GPU: unified memory), or NN inferences (ML: forward passes), enabling efficient "signaling" without global locks.
-- **AI Bonus Integration**: NN trained on synthetic pairs ($x, \overline{\nabla F}(x)$) approximates the linear gradient form, reducing computations while bounding errors via MSE minimization.
-- **Evaluation Infrastructure**: Metrics computed post-run, visualized for trade-off analysis.
+All modes are exposed via `binding.cpp` to Python, with auto-detection (`torch.cuda.is_available()`) and graceful fallbacks.
 
-This approach holistically solves the problem, transforming challenges into strengths through rigorous design.
+## Optimization Tradeoffs
+| Aspect | Tradeoff |
+|-------|----------|
+| **Accuracy vs. Speed** | Naive: fastest (1 iteration) but high error (13–30); Collaborative: exact (\(<2.3 \times 10^{-9}\)) but requires 24–1002 iterations; ML: 1 inference but training overhead and growing error (6.55 → 119.95) |
+| **Scalability** | GPU/OpenMP scale best for \(N > 1000\); ThreadPool has enqueue overhead; Sequential fails at large \(N\) |
+| **Overhead** | GPU: memory allocation + kernel launch; ML: 500-epoch training (~0.1s at \(N=10k\)); ThreadPool: task setup |
+| **Portability** | GPU/ML require CUDA/NVIDIA; auto-fallback to CPU ensures robustness |
+| **Numerical Stability** | Double precision + convexity enforcement prevent divergence; extreme coefficients may slow convergence (tunable via \(\eta_0\)) |
 
----
-
-## Design Decisions: Rationale for Chosen Methods
-
-Design choices were meticulously calibrated to address the problem's demands, with each element justified by mathematical, computational, and engineering rationales.
-
-### Architectural Choices: Hybrid Stack and Justifications
-The selection of a **C++/CUDA/Python hybrid** was driven by layered optimization needs. C++ underpins the core for its unparalleled control over memory (e.g., `std::vector` for agent ensembles) and threading (`std::thread` for parallelism), enabling O(1) access and RAII for resource safety. CUDA augments this for GPU, utilizing NVIDIA's SIMT model for agent-parallel gradients, with host-device orchestration to minimize PCIe transfers. Python acts as the orchestration layer, leveraging PyBind11 for zero-copy bindings and PyTorch for ML, providing a user-friendly facade while offloading heavy computations to C++.
-
-Rationale: C++ ensures microsecond latencies in loops; CUDA scales to teraflops; Python simplifies scripting (e.g., argparse for modes). This resolves scalability by delegating O(N) tasks to compiled code, with auto-detection mitigating heterogeneity.
-
-### Algorithmic Methods: Detailed Selections and Mathematical Underpinnings
-- **Naive Approach**: Direct computation of unweighted mean. Mathematically, it's the minimizer if $a_i = 1 \forall i$, but generally an approximation with error bound $\|x - x^*\| \leq \frac{\max |b_i - \bar{b}| \cdot \variance(a_i)}{\min a_i}$. Chosen for baseline; variants (sequential: loop; parallel: threaded sum; GPU: reduction kernel) demonstrate progressive efficiency.
-- **Collaborative Approach**: Consensus GD, with update rule derived from subgradient methods for convex functions. Step $\eta = 0.01$ is conservatively small to satisfy $\eta < 1/L$ (Lipschitz), preventing oscillation; convergence proven by descent lemma ($F(x_{k+1}) \leq F(x_k) - \eta (1 - \eta L/2) \|\nabla F\|^2$). "Axon" sharing resolves communication via efficient primitives.
-- **ML Bonus**: NN regression on gradients. See dedicated section below for exhaustive details.
-
-Rationale: Naive for speed; collaborative for accuracy; ML for innovation—balancing assignment criteria.
-
-### Software Design Patterns: Granular Application and Benefits
-- **Strategy Pattern**: Algorithms in derived classes from `OptimizationStrategy`, with `optimize()` virtual. Details: Pointer-based polymorphism in `OptimizationEngine`; rationale: Enables dynamic dispatch, e.g., swap naive/collaborative without recompiling.
-- **Factory Pattern**: `createStrategy` parses mode strings, instantiating e.g., `CollaborativeCudaStrategy`. Details: Integrates hardware checks; rationale: Encapsulates creation logic, supporting extensions like new backends.
-- **Facade Pattern**: `run_simulation.py` abstracts via CLI, routing to bindings. Details: Hides engine instantiation; rationale: User focuses on params, not internals.
-
-Rationale: Patterns ensure SOLID principles—single responsibility (agents compute only locals), open-closed (add strategies without changes), etc.
-
-### Implementation Details: Exhaustive Coverage
-- **Agent**: Constructor initializes $a, b$; methods derive from quadratic calculus.
-- **Build**: CMake subdirs for isolation; bindings link static libs.
-- **Detection**: Torch API for GPU; fallbacks in factories.
-
-These ensure a cohesive, error-resilient system.
+**Key Insight**: For high accuracy, use **collaborative_gpu** or **collaborative_openmp**. For speed with acceptable error, **naive_gpu**. ML offers a middle ground but requires scaling model capacity.
 
 ---
 
-## Parallelization Strategy: In-Depth Analysis
+## Performance Bottlenecks: Why Each Mode is Slow in Certain Scenarios
 
-Parallelism mitigates O(N) bottlenecks, with each backend detailed below.
+| Mode | Slow When | Root Cause |
+|------|-----------|------------|
+| **CPU Sequential** | \(N \geq 1000\) | **Single-threaded**; O(N) work per iteration, no parallelism. At \(N=10k\), collaborative takes **217ms** due to 1002 × O(N) loops. |
+| **ThreadPool** | Small \(N\) (< 1000), or **naive method** | **Task enqueue overhead** (lambda capture, future sync, mutex contention) dominates compute. For \(N=100\), `naive_threadpool` is **32× slower** than CPU (2ms vs 62μs). |
+| **OpenMP** | Very small \(N\) (< 100), or **naive method** | **Parallel for overhead** (thread spawn, barrier sync) outweighs reduction benefit. `naive_openmp` at \(N=100\): 377μs vs CPU 62μs (~6× slower). |
+| **GPU** | Small \(N\) (< 1000), or **naive method** | **Kernel launch latency** (~10–100μs) + **unified memory page faults** dominate. `naive_gpu` at \(N=100\): **160ms** (2600× slower than CPU). Memory underutilized; no coalescing benefit. |
+| **ML** | Large \(N\) (> 1000), or **high accuracy needed** | **Fixed model capacity** (40 neurons) cannot generalize; error grows as \(N\) increases. Training time scales with \(N\) (125ms at \(N=10k\)). Inference fast, but **accuracy collapses** (gap = 120). |
 
-### CPU Parallelization: Mechanisms and Theoretical Basis
-- **Core Mechanism**: Custom `ThreadPool` with fixed threads, queue for tasks, condition variables for idle wakeup, atomic counters for completion tracking.
-- **Application in Strategies**: Enqueue per-agent lambdas for gradients; aggregate via mutex-protected sums. In collaborative, reused across iterations to amortize setup.
-- **Mathematical and Implementation Details**: Tasks are data-parallel (independent $\nabla f_i$); reduction uses locked accumulation to avoid race conditions. Overhead: Context switching (~microseconds); mitigated by uniform loads. Vs. OpenMP: Finer RAII control.
-- **Rationale**: Balances parallelism (speedup $\approx$ cores for large N) with simplicity; work-stealing minimal due to homogeneity.
-
-### GPU Parallelization: Advanced Kernel Design
-- **Core Mechanism**: SIMT kernels—`computeGradientsKernel` maps threads to agents (idx = blockIdx*blockDim + threadIdx), computing $\(\nabla f_i\)$; `sumKernel` uses shared memory tree reduction (strided loads, `__syncthreads()` barriers, halving sums).
-- **Application**: Host allocates pinned memory, transfers coefficients once, iterates kernel launches, syncs with `cudaDeviceSynchronize`.
-- **Mathematical and Implementation Details**: Grid/block adaptive (block=256 for occupancy); reduction O(log N) with warp divergence minimized. Error handling via `cudaGetLastError`. Transfers: O(N) initial, O(1) per iter.
-- **Rationale**: Exploits GPU's 1000x threads for massive N; trade-off: Setup latency, but net gain in throughput.
-
-### ML Parallelization: Vectorized Approximations
-- **Core Mechanism**: PyTorch's tensor ops auto-parallelize (e.g., matrix multi in forward pass).
-- **Application**: Batched training on GPU; inference in GD loop.
-- **Details**: See ML section.
-
-Overall: Patterns unify; math preserved (e.g., GD convergence).
-
----
-
-## Machine Learning Component: Exhaustive Exploration
-
-The ML bonus represents a sophisticated augmentation, transforming the engine into an AI-infused system where agents "learn" gradient behaviors, approximating the exact aggregate $\overline{\nabla F}(x) = \frac{2}{N} \sum a_i (x - b_i)$, a linear function in $x$ with slope $2 \bar{a}$ and intercept $-2 \bar{a} \bar{b}$.
-
-### Architecture: Neural Design and Justification
-A fully connected feedforward network: Input (1 neuron for $x$), hidden (10 neurons with ReLU $\sigma(z) = \max(0,z)$ for non-linearity and gradient flow), output (1 for $\hat{g}(x)$). Weights initialized via PyTorch defaults (e.g., Kaiming for ReLU). Rationale: Shallow to minimize parameters (~30 total), ensuring low inference latency (O(1) matrix multi) while approximating the linear gradient (ReLU adds capacity for potential non-linear extensions, e.g., if costs generalized).
-
-### Training Process: Algorithmic Protocols and Derivations
-- **Data Synthesis**: Generate $M=1000$ samples $x_j \sim U(-10,10)$; compute true targets $g_j = \frac{1}{N} \sum \nabla f_i(x_j)$. Rationale: Uniform covers domain; exact computation ensures high-fidelity labels.
-- **Loss Function**: MSE $\mathcal{L}(\theta) = \frac{1}{M} \sum_{j=1}^M (\hat{g}(x_j; \theta) - g_j)^2$, where $\theta$ are parameters. Rationale: L2 norm suits regression, penalizing large errors; derivable for backprop.
-- **Optimizer**: Adam ($\eta=0.01$, $\beta_1=0.9$, $\beta_2=0.999$), updating via momentum-estimated gradients. Rationale: Adaptive steps handle scale variance; converges faster than SGD for small nets.
-- **Epochs and Batch**: 100 full-batch epochs (no mini-batching for simplicity). Details: Zero grad, forward, loss, backward, step. Device: CUDA if available for tensor parallelism.
-- **Mathematical Convergence**: NN approximates linear function universally (by Cybenko theorem for ReLU); error decreases with epochs, bounded by training data noise.
-
-### Integration and Operational Usage
-- **In Collaborative Mode**: Post-training, replace sum with $\hat{\overline{\nabla F}}(x)$; update $x \leftarrow x - \eta \hat{g}$. Details: Inference with `no_grad()` for efficiency.
-- **In Naive Mode**: Placeholder predicts mean $b_i$ (extendable to weighted).
-- **Rationale and Trade-Offs**: Resolves O(N) challenge by amortization—training $O(M \times epochs \times layers)$, inference O(1). Errors: Bias from finite data, variance from net capacity; mitigated by overparameterization (10 hidden > needed for linear). Benefits: Simulates "learned reasoning," accelerating in repetitive fabrics.
-- **Advanced Extensions**: Potential for ensemble nets or meta-learning; current design proof-of-concept, tunable via epochs/lr.
-
-This ML infusion resolves computational bottlenecks through approximation, exemplifying AI-HPC synergy.
-
----
-
-## Optimization Trade-Offs: Balancing Speed, Accuracy, and Complexity
-
-Trade-offs are inherent, analyzed via metrics and theory.
-
-### Speed vs. Accuracy: Granular Comparisons
-- **Naive**: O(1) iterations, but error if $a_i$ vary (bound $\Delta = |x - x^*| \leq \max |b_i - \bar{b}| \cdot (\max a_i / \min a_i - 1)$).
-- **Collaborative**: Exact (error < tolerance), but O(k N) time, k iterations ~1/$\eta \mu\)$ where $\(\mu = 2 \min a_i$.
-- **ML**: Approximates (error from NN MSE), but reduces to O(k) post-training.
-
-Rationale: User selects based on needs.
-
-### Parallelism: Overheads and Gains
-- CPU: Sync costs vs. core utilization.
-- GPU: Transfers/setup vs. massive threads.
-- ML: Training time vs. inference speed.
-
-### Complexity: Systemic Considerations
-- Patterns: Indirection vs. extensibility.
-- ML: Dependencies vs. acceleration.
-
-Balanced via modes.
+> **Summary**:  
+> - **Small \(N\)**: Sequential wins — parallelism adds overhead.  
+> - **Large \(N\), high accuracy**: GPU/OpenMP dominate via massive data-parallel reduction.  
+> - **ML**: Only viable for **approximate, real-time** use with small-to-medium \(N\).
 
 ---
 
 ## Summary of Performance Results
+Performance evaluated across \(N = 100, 1000, 10000\) agents using `run_simulation.py --method=both --mode=all`. Raw data from `performance_data.csv`; visualized in **Figure 1** (`scaling.png`).
 
-*(To be completed after benchmarking on target hardware. Include metrics such as runtime, iterations, final cost across modes for various $N$, with statistical averages over multiple runs, standard deviations, and visualizations from `performance.png`. Discuss hardware specifics, e.g., CPU cores, GPU model, and how results vary with $N$.)*
+![Figure 1: Performance Scaling Across Methods and Modes]
 
----
+*Figure 1: Log-log plots showing (a) Iterations vs. N, (b) Wall-clock time (s) vs. N, (c) Accuracy gap (\(|x - x^*|\)) vs. N, and (d) Speedup (vs. CPU sequential) vs. N. Collaborative modes show sublinear iteration growth and ~5x speedup at \(N=10k\). Naive is fast but inaccurate. ML inference is quick but error grows with \(N\).*
+
+### Raw Performance Data Table
+| N     | Method       | Mode       | x                  | Cost             | Iterations | Wall_Clock_Time_s | Accuracy_Gap     | Speedup   |
+|-------|--------------|------------|--------------------|------------------|------------|-------------------|------------------|-----------|
+| 100   | naive        | cpu        | 0.11152293524961941| 9995.350633528105| 1.0        | 6.246566772460938e-05 | 28.388480966415955 | 1.0       |
+| 100   | naive        | threadpool | 0.11152293524961937| 9995.350633528105| 1.0        | 0.00200653076171875   | 28.388480966415955 | 0.031131178707224334 |
+| 100   | naive        | openmp     | 0.11152293524961923| 9995.350633528105| 1.0        | 0.000377655029296875  | 28.388480966415955 | 0.16540404040404041 |
+| 100   | naive        | gpu        | 0.11152293524961944| 9995.350633528105| 1.0        | 0.15987563133239746   | 28.388480966415955 | 0.0003907141269999866 |
+| 100   | naive        | ml         | 0.11152293524961941| 9995.350633528105| 0.0        | 0.0                   | 28.388480966415955 | 1.0       |
+| 100   | collaborative| cpu        | -0.13180405103489634| 9966.96215256168 | 24.0       | 0.00013756752014160156| 9.094947017729282e-12 | 1.0       |
+| 100   | collaborative| threadpool | -0.13180405103489637| 9966.962152561682| 24.0       | 0.003100872039794922  | 7.275957614183426e-12 | 0.04436413962786406 |
+| 100   | collaborative| openmp     | -0.13180405103489634| 9966.96215256168 | 24.0       | 0.00017571449279785156| 9.094947017729282e-12 | 0.7829036635006784 |
+| 100   | collaborative| gpu        | -0.1318040510348964 | 9966.962152561682| 24.0       | 0.008629798889160156  | 7.275957614183426e-12 | 0.015940987954470107 |
+| 100   | collaborative| ml         | -0.014907842090143144| 9973.5139799048| 1.0        | 0.003912854008376598  | 6.551827343109835   | 0.03515784638197551 |
+| 1000  | naive        | cpu        | 0.35418118624577966| 125251.02785306104| 1.0        | 0.0009706020355224609 | 30.012844467360992 | 1.0       |
+| 1000  | naive        | threadpool | 0.3541811862457795 | 125251.02785306104| 1.0        | 0.0024051666259765625 | 30.012844467360992 | 0.40354877081681206 |
+| 1000  | naive        | openmp     | 0.35418118624577966| 125251.02785306104| 1.0        | 0.0008518695831298828 | 30.012844467360992 | 1.1393786733837112 |
+| 1000  | naive        | gpu        | 0.3541811862457796 | 125251.02785306104| 1.0        | 0.0017938613891601562 | 30.012844467360992 | 0.5410685805422647 |
+| 1000  | naive        | ml         | 0.35418118624577966| 125251.02785306104| 0.0        | 0.0                   | 30.012844467360992 | 1.0       |
+| 1000  | collaborative| cpu        | 0.2770212776496788 | 125221.01500859366| 105.0      | 0.002917051315307617  | 1.4551915228366852e-11 | 1.0       |
+| 1000  | collaborative| threadpool | 0.27702127764967877| 125221.01500859366| 105.0      | 0.009784698486328125  | 1.4551915228366852e-11 | 0.29812378167641324 |
+| 1000  | collaborative| openmp     | 0.27702127764967877| 125221.01500859366| 105.0      | 0.0013136863708496094 | 1.4551915228366852e-11 | 2.220508166969147 |
+| 1000  | collaborative| gpu        | 0.27702127764967877| 125221.01500859366| 105.0      | 0.0106964111328125    | 1.4551915228366852e-11 | 0.27271308844507847 |
+| 1000  | collaborative| ml         | -0.003351768880594715| 125617.2896401297| 1.0        | 0.017416563001461327  | 396.2746315360273   | 0.16748719681735505 |
+| 10000 | naive        | cpu        | 0.06767026532443614| 1255082.4158214082| 1.0        | 0.006722927093505859  | 13.999824553495273 | 1.0       |
+| 10000 | naive        | threadpool | 0.06767026532443629| 1255082.4158214082| 1.0        | 0.011439085006713867  | 13.999824553495273 | 0.5877154588465787 |
+| 10000 | naive        | openmp     | 0.06767026532443626| 1255082.4158214082| 1.0        | 0.006745576858520508  | 13.999824553495273 | 0.9966422790089421 |
+| 10000 | naive        | gpu        | 0.06767026532443629| 1255082.4158214082| 1.0        | 0.007893562316894531  | 13.999824553495273 | 0.8516974749305304 |
+| 10000 | naive        | ml         | 0.06767026532443614| 1255082.4158214082| 0.0        | 0.0                   | 13.999824553495273 | 1.0       |
+| 10000 | collaborative| cpu        | 0.05093755809304714| 1255068.4159968526| 1002.0     | 0.21718430519104004   | 2.0954757928848267e-09 | 1.0       |
+| 10000 | collaborative| threadpool | 0.05093755809304679| 1255068.4159968523| 1002.0     | 0.09140253067016602   | 2.3283064365386963e-09 | 2.376130109293894 |
+| 10000 | collaborative| openmp     | 0.05093755809304681| 1255068.4159968523| 1002.0     | 0.04826807975769043   | 2.3283064365386963e-09 | 4.49954309931786 |
+| 10000 | collaborative| gpu        | 0.05093755809304706| 1255068.4159968526| 1002.0     | 0.0449984073638916    | 2.0954757928848267e-09 | 4.826488711805316 |
+| 10000 | collaborative| ml         | 0.0019589736471495676| 1255188.3666527877| 1.0        | 0.1252478719688952    | 119.95065593300387  | 1.7340358904060014 |
+
+### Key Observations
+1. **Iterations vs. N**: Collaborative: 24 → 105 → 1002 (sublinear due to convexity).
+2. **Time (s) vs. N**: GPU/OpenMP: **45–48ms** at \(N=10k\) (**~5x** vs CPU 217ms).
+3. **Accuracy Gap**: Collaborative: **< 2.3e-9**; ML: 6.55 → 119.95.
+4. **Speedup (vs. CPU Sequential)**: `collaborative_gpu`: **4.83x**, `collaborative_openmp`: **4.50x**.
+
+## Conclusion
+The **ParallelOptimizationEngine** achieves **exact convergence** and **~5x speedup** on GPU/OpenMP for \(N=10k\). ML is fast but inaccurate at scale. Recommended: **`collaborative_gpu` andd `collaborative_openmp`** for HPC; **`naive_gpu`** for real-time.

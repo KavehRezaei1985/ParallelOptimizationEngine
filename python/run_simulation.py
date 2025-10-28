@@ -1,239 +1,285 @@
 # python/run_simulation.py
 #
-# **Main orchestration script** for the **ParallelOptimizationEngine** benchmark suite.
+# Title: Main Executable Script for ParallelOptimizationEngine
 #
-# This module serves as the **user-facing entry point** and **Facade** for:
-#   • Command-line argument parsing
-#   • Hardware detection (CPU vs GPU)
-#   • Execution mode selection and routing
-#   • Integration with C++ backends via `poe_bindings`
-#   • ML-enhanced gradient prediction (bonus)
-#   • Performance metric collection and visualization
+# Description:
+# This script serves as the primary executable for the **ParallelOptimizationEngine**, orchestrating
+# multi-agent optimization simulations. It acts as a **Facade**, abstracting the complexity of
+# C++/CUDA/ML integrations behind a user-friendly CLI interface. The module leverages hardware
+# detection via PyTorch and supports scalable execution for varying numbers of agents (N).
 #
-# The script supports **naive** and **collaborative** optimization methods across
-# **CPU**, **GPU**, and **ML** backends, with automatic fallback and comprehensive
-# reporting.  All operations are deterministic when seeded externally.
+# Functionality:
+# • Parses command-line arguments for configuration (N, method, mode, etc.).
+# • Generates random agents with quadratic costs f_i(x) = a_i (x - b_i)^2.
+# • Executes optimization using specified method (naive/collaborative) and mode
+#   (cpu/threadpool/openmp/gpu/ml).
+# • Computes metrics: final x, global cost, iterations, runtime, accuracy gap.
+# • Visualizes results via scaling plots (scaling.png) with a 2x2 grid of iterations,
+#   time, accuracy gap, and speedup vs. N.
+# • Saves raw metrics to performance_data.csv.
 #
-# Design Principles:
-#   • **Modularity**: Clean separation between parsing, execution, and visualization
-#   • **Hardware Awareness**: Uses `torch.cuda.is_available()` for GPU detection
-#   • **Extensibility**: New modes easily added via `get_modes()` and routing
-#   • **Reproducibility**: All random operations are isolated and configurable
+# Dependencies:
+# - argparse: For command-line argument parsing
+# - numpy: For numerical operations and random agent generation
+# - torch: For hardware detection
+# - poe_bindings: For C++ integration (Agent, create_strategy, computeClosedForm)
+# - ml_agent: For ML-enhanced optimization
+# - visualize: For visualization output
+# - pandas: For data storage in CSV
+# - time: For performance timing
 #
-# Output:
-#   • Console: Per-mode results (x, cost, iterations, time)
-#   • File: `performance.png` — high-resolution comparative bar chart
-#
-# Usage:
-#   ```bash
-#   python run_simulation.py --N 500 --method both --mode auto
-#   ```
-
 import argparse
-import torch
 import numpy as np
-import poe_bindings
+import torch
+from poe_bindings import Agent, create_strategy, computeClosedForm
 from ml_agent import MLGradientPredictor
 import visualize
+import pandas as pd
 import time
 
-
 def parse_args():
+    """Parse command-line arguments for simulation configuration.
+    
+    Returns:
+        argparse.Namespace: Parsed arguments including N, method, mode, max_iter, and tolerance.
+    
+    Notes:
+    - Supports multiple N values via comma-separated string for scalability testing.
+    - Expanded mode options reflect additional parallel backends (threadpool, openmp).
     """
-    Parse and validate command-line arguments using argparse.
-
-    Returns
-    -------
-    argparse.Namespace
-        Parsed arguments with defaults:
-          --N: 100 agents
-          --method: 'both'
-          --mode: 'auto'
-          --max_iter: 10000
-          --tolerance: 1e-6
-    """
-    parser = argparse.ArgumentParser(
-        description="Run ParallelOptimizationEngine simulations with multiple backends."
-    )
-    parser.add_argument(
-        '--N', type=int, default=100,
-        help='Number of agents in the ensemble (N > 0)'
-    )
-    parser.add_argument(
-        '--method', type=str, default='both',
-        choices=['naive', 'collaborative', 'both'],
-        help='Optimization method to execute'
-    )
-    parser.add_argument(
-        '--mode', type=str, default='auto',
-        choices=['cpu', 'gpu', 'ml', 'all', 'auto'],
-        help='Execution backend: cpu, gpu, ml, all, or auto (hardware-aware)'
-    )
-    parser.add_argument(
-        '--max_iter', type=int, default=10000,
-        help='Maximum iterations for collaborative GD'
-    )
-    parser.add_argument(
-        '--tolerance', type=float, default=1e-6,
-        help='Convergence threshold on average gradient magnitude'
-    )
+    parser = argparse.ArgumentParser(description="Parallel Optimization Engine")
+    parser.add_argument("--N", type=str, default="100,1000,10000", 
+                        help="Comma-separated list of number of agents (e.g., 100,500,1000)")  # Changed to str for multi-N support
+    parser.add_argument("--method", choices=["naive", "collaborative", "both"], default="both",
+                        help="Optimization method: naive, collaborative, or both")
+    parser.add_argument("--mode", choices=["cpu", "threadpool", "openmp", "gpu", "ml", "all"], default="all",
+                        help="Execution mode: cpu (sequential), threadpool, openmp, gpu, ml, or all")  # Expanded mode choices
+    parser.add_argument("--max_iter", type=int, default=10000, 
+                        help="Maximum iterations for collaborative method")
+    parser.add_argument("--tolerance", type=float, default=1e-6, 
+                        help="Convergence tolerance for collaborative method")
     return parser.parse_args()
 
-
-def get_modes(mode: str, has_gpu: bool):
+def generate_agents(N, seed=42):
+    """Generate N agents with random coefficients a_i ~ N(5,2), b_i ~ N(0,5).
+    
+    Args:
+        N (int): Number of agents to generate
+        seed (int, optional): Random seed for reproducibility; defaults to 42
+    
+    Returns:
+        list: List of Agent objects with random a and b coefficients
+    
+    Notes:
+    - Added to centralize agent generation within Python, replacing C++ dependency.
+    - Ensures convexity by setting a_i > 0.
+    - Uses a fixed seed for deterministic results.
     """
-    Resolve user-specified mode into concrete backend list.
+    np.random.seed(seed)
+    a = np.random.normal(5.0, 2.0, N)
+    a = np.maximum(a, 1e-6)  # Ensure a_i > 0 for mathematical convexity
+    b = np.random.normal(0.0, 5.0, N)
+    return [Agent(float(a[i]), float(b[i])) for i in range(N)]
 
-    Parameters
-    ----------
-    mode : str
-        User mode from CLI
-    has_gpu : bool
-        Whether CUDA-capable GPU is available
-
-    Returns
-    -------
-    list[str]
-        List of valid backend strings: ['cpu'], ['gpu'], ['ml'], etc.
+def run_naive(agents, mode, args):
+    """Execute naive optimization (average of local minima) for given mode.
+    
+    Args:
+        agents (list): List of Agent objects
+        mode (str): Execution mode (cpu, threadpool, openmp, gpu, ml)
+        args (argparse.Namespace): Command-line arguments
+    
+    Returns:
+        tuple: (final_x, iterations, time_taken) or (None, None, None) if mode invalid
+    
+    Notes:
+    - Reordered arguments to prioritize agents for consistency with generation.
+    - Added threadpool and openmp modes for parallel CPU execution.
+    - Updated ML mode to use MLGradientPredictor.optimize with agent data, leveraging training time.
     """
-    if mode == 'all':
-        modes = ['cpu', 'gpu' if has_gpu else None, 'ml']
-        modes = [m for m in modes if m is not None]
-    elif mode == 'auto':
-        modes = ['gpu' if has_gpu else 'cpu']
-    else:
-        modes = [mode]
-    return modes
-
-
-def run_naive(mode: str, agents, args):
-    """
-    Execute **naive** optimization (unweighted averaging of local minima).
-
-    Parameters
-    ----------
-    mode : str
-        Execution backend: 'cpu', 'gpu', or 'ml'
-    agents : list[Agent]
-        Generated agent ensemble
-    args : argparse.Namespace
-        CLI parameters (unused in naive)
-
-    Returns
-    -------
-    tuple
-        (final_x, iterations, time_taken)
-    """
-    if mode == 'cpu':
-        # Randomly select between sequential and parallel CPU for diversity
-        mode_str = 'naive_parallel_cpu' if np.random.rand() > 0.5 else 'naive'
-    elif mode == 'gpu':
-        mode_str = 'naive_gpu'
-    elif mode == 'ml':
-        # ML placeholder: train on synthetic mean b_i prediction
-        predictor = MLGradientPredictor()
-        x_data = np.random.uniform(-10, 10, 1000)
-        b_mean = np.mean([ag.b for ag in agents])
-        grad_data = np.full(1000, b_mean)  # Predict constant mean
-        predictor.train(x_data, grad_data)
-        x = predictor.predict(0.0)
-        iterations = 1.0
-        time_taken = 0.15  # Simulated inference latency
+    mode_mapping = {
+        "cpu": "cpu",
+        "threadpool": "threadpool",
+        "openmp": "openmp",
+        "gpu": "gpu",
+        "ml": "ml"
+    }
+    if mode not in mode_mapping:
+        return None, None, None  # Skip invalid modes to maintain robustness
+    mapped_mode = mode_mapping[mode]
+    if mapped_mode == "cpu":
+        strategy = create_strategy("naive", "cpu")
+    elif mapped_mode == "threadpool":
+        strategy = create_strategy("naive", "threadpool")
+    elif mapped_mode == "openmp":
+        strategy = create_strategy("naive", "openmp")
+    elif mapped_mode == "gpu":
+        if not torch.cuda.is_available():
+            print("GPU unavailable, falling back to CPU for naive")  # Notify user of fallback
+            strategy = create_strategy("naive", "cpu")
+        else:
+            strategy = create_strategy("naive", "gpu")
+    elif mapped_mode == "ml":
+        predictor = MLGradientPredictor(agents, is_naive=True)
+        x, iterations = predictor.optimize(agents)  # Unpack optimization result
+        time_taken = predictor.training_time  # Use training time as proxy for ML execution
         return x, iterations, time_taken
-
-    # C++ backend execution
-    engine = poe_bindings.create_engine(mode_str)
-    x, iterations, time_taken = engine.run(agents)
-    return x, iterations, time_taken
-
-
-def run_collaborative(mode: str, agents, args):
-    """
-    Execute **collaborative** consensus gradient descent.
-
-    Parameters
-    ----------
-    mode : str
-        Execution backend
-    agents : list[Agent]
-        Agent ensemble
-    args : argparse.Namespace
-        CLI parameters (max_iter, tolerance)
-
-    Returns
-    -------
-    tuple
-        (final_x, iterations, time_taken)
-    """
-    if mode == 'cpu':
-        mode_str = 'collaborative_cpu'
-    elif mode == 'gpu':
-        mode_str = 'collaborative_gpu'
-    elif mode == 'ml':
-        # ML-accelerated GD: train on true average gradients
-        predictor = MLGradientPredictor()
-        x_data = np.random.uniform(-10, 10, 1000)
-        grad_data = np.array([
-            sum(ag.compute_gradient(x) for ag in agents) / len(agents)
-            for x in x_data
-        ])
-        predictor.train(x_data, grad_data)
-
-        # Inference loop with fixed step size
-        start = time.time()
-        x = 0.0
-        iterations = 0
-        while iterations < args.max_iter:
-            total_grad = predictor.predict(x)
-            if abs(total_grad) < args.tolerance:
-                break
-            x -= 0.01 * total_grad
-            iterations += 1
-        time_taken = time.time() - start
+    if strategy:
+        start_time = time.time()
+        x, iterations, time_taken = strategy.run(agents)
+        time_taken = time.time() - start_time  # Measure actual execution time
         return x, iterations, time_taken
+    return None, None, None
 
-    # C++ backend execution
-    engine = poe_bindings.create_engine(mode_str)
-    x, iterations, time_taken = engine.run(agents)
-    return x, iterations, time_taken
+def run_collaborative(agents, mode, args):
+    """Execute collaborative optimization (gradient descent) for given mode.
+    
+    Args:
+        agents (list): List of Agent objects
+        mode (str): Execution mode (cpu, threadpool, openmp, gpu, ml)
+        args (argparse.Namespace): Command-line arguments (max_iter, tolerance)
+    
+    Returns:
+        tuple: (final_x, iterations, time_taken) or (None, None, None) if mode invalid
+    
+    Notes:
+    - Reordered arguments to prioritize agents for consistency.
+    - Added threadpool and openmp modes for parallel CPU execution.
+    - Updated ML mode to use MLGradientPredictor.optimize with max_iter and tolerance.
+    """
+    mode_mapping = {
+        "cpu": "cpu",
+        "threadpool": "threadpool",
+        "openmp": "openmp",
+        "gpu": "gpu",
+        "ml": "ml"
+    }
+    if mode not in mode_mapping:
+        return None, None, None  # Skip invalid modes to maintain robustness
+    mapped_mode = mode_mapping[mode]
+    if mapped_mode == "cpu":
+        strategy = create_strategy("collaborative", "cpu")
+    elif mapped_mode == "threadpool":
+        strategy = create_strategy("collaborative", "threadpool")
+    elif mapped_mode == "openmp":
+        strategy = create_strategy("collaborative", "openmp")
+    elif mapped_mode == "gpu":
+        if not torch.cuda.is_available():
+            print("GPU unavailable, falling back to CPU for collaborative")  # Notify user of fallback
+            strategy = create_strategy("collaborative", "cpu")
+        else:
+            strategy = create_strategy("collaborative", "gpu")
+    elif mapped_mode == "ml":
+        predictor = MLGradientPredictor(agents, is_naive=False, max_iter=args.max_iter, tol=args.tolerance)
+        x, iterations = predictor.optimize(agents)  # Unpack optimization result
+        time_taken = predictor.training_time + predictor.iteration_time  # Include both training and iteration time
+        return x, iterations, time_taken
+    if strategy:
+        start_time = time.time()
+        x, iterations, time_taken = strategy.run(agents)
+        time_taken = time.time() - start_time  # Measure actual execution time
+        return x, iterations, time_taken
+    return None, None, None
 
+def compute_metrics(agents, x, iterations, time_taken, mode=None):
+    """Compute global cost and accuracy gap to closed-form solution.
+    
+    Args:
+        agents (list): List of Agent objects
+        x (float): Optimized value
+        iterations (int): Number of iterations
+        time_taken (float): Execution time in seconds
+        mode (str, optional): Execution mode; defaults to None
+    
+    Returns:
+        tuple: (cost, accuracy_gap) or (None, None) if x is None
+    
+    Notes:
+    - Added to compute performance metrics for visualization and validation.
+    - Uses computeClosedForm for accurate reference solution.
+    """
+    if x is None:
+        return None, None
+    cost = sum(ag.computeCost(x) for ag in agents)
+    x_star = computeClosedForm(agents)
+    optimal_cost = sum(ag.computeCost(x_star) for ag in agents)  # Compute optimal cost for accuracy comparison
+    accuracy_gap = abs(cost - optimal_cost) if optimal_cost != 0 else abs(cost)  # Handle division by zero
+    return cost, accuracy_gap
 
-if __name__ == '__main__':
-    # ------------------------------------------------------------------
-    # Initialization and setup
-    # ------------------------------------------------------------------
+def main():
+    """Execute the main simulation workflow.
+    
+    Notes:
+    - Processes multiple N values for scalability testing.
+    - Normalizes speedup against CPU sequential baseline.
+    - Generates comprehensive metrics and visualization.
+    """
     args = parse_args()
-    has_gpu = torch.cuda.is_available()
-    selected_modes = get_modes(args.mode, has_gpu)
-    agents = poe_bindings.generate_agents(args.N)
-
+    # Parse N as a comma-separated list, default to [100, 1000, 10000]; Added for multi-N scalability
+    N_values = [int(n.strip()) for n in args.N.split(',')] if args.N else [100, 1000, 10000]
+    methods = ["naive", "collaborative"] if args.method == "both" else [args.method]  # Support both methods
+    modes = ["cpu", "threadpool", "openmp", "gpu", "ml"] if args.mode == "all" else [args.mode]  # Support all modes
     results = []
-
-    # ------------------------------------------------------------------
-    # Naive method execution
-    # ------------------------------------------------------------------
-    if args.method in ['naive', 'both']:
-        for m in selected_modes:
-            x, iter_, time_ = run_naive(m, agents, args)
-            cost = poe_bindings.compute_global_cost(agents, x)
-            label = f"Naive {m.upper()}"
-            print(f"{label}: x={x:.4f}, cost={cost:.4f}, iter={iter_}, time={time_:.4f}s")
-            results.append((label, time_, iter_, cost))
-
-    # ------------------------------------------------------------------
-    # Collaborative method execution
-    # ------------------------------------------------------------------
-    if args.method in ['collaborative', 'both']:
-        for m in selected_modes:
-            x, iter_, time_ = run_collaborative(m, agents, args)
-            cost = poe_bindings.compute_global_cost(agents, x)
-            label = f"Collaborative {m.upper()}"
-            print(f"{label}: x={x:.4f}, cost={cost:.4f}, iter={iter_}, time={time_:.4f}s")
-            results.append((label, time_, iter_, cost))
-
-    # ------------------------------------------------------------------
-    # Visualization
-    # ------------------------------------------------------------------
-    if results:
-        modes, times, iters, costs = zip(*results)
-        visualize.plot_bar_charts(modes, times, iters, costs)
+    baseline_times = {}  # Store baseline times and initial results for each N and method; Added for speedup normalization
+    baseline_results = {}  # Store initial CPU-seq results; Added for speedup normalization
+    for N in N_values:
+        agents = generate_agents(N)
+        for method in methods:
+            # Set baseline to CPU sequential time and store initial result
+            baseline_time = None
+            baseline_x = None
+            baseline_iterations = None
+            for mode in modes:
+                if mode == "cpu":
+                    if method == "naive":
+                        x, iterations, time_taken = run_naive(agents, mode, args)
+                    else:
+                        x, iterations, time_taken = run_collaborative(agents, mode, args)
+                    if x is not None and time_taken is not None:
+                        baseline_time = time_taken
+                        baseline_x = x
+                        baseline_iterations = iterations
+                    break
+            if baseline_time is None:
+                baseline_time = float('inf')  # Fallback if CPU time not available
+            baseline_times[(N, method)] = baseline_time
+            baseline_results[(N, method)] = (baseline_x, baseline_iterations, baseline_time)
+            for mode in modes:
+                if method == "naive":
+                    x, iterations, time_taken = run_naive(agents, mode, args)
+                else:
+                    x, iterations, time_taken = run_collaborative(agents, mode, args)
+                if x is not None:
+                    cost, accuracy_gap = compute_metrics(agents, x, iterations, time_taken)
+                    if mode == "cpu":
+                        # Use stored baseline time for CPU-seq to ensure speedup = 1.00x
+                        baseline = baseline_times.get((N, method), time_taken)
+                        baseline_x, baseline_iterations, baseline_time = baseline_results.get((N, method), (x, iterations, time_taken))
+                        x = baseline_x
+                        iterations = baseline_iterations
+                        time_taken = baseline_time
+                    else:
+                        baseline = baseline_times.get((N, method), time_taken)
+                    speedup = baseline / time_taken if time_taken > 0 and baseline > 0 else 1.0  # Corrected speedup calculation
+                    results.append({
+                        "N": N,
+                        "Method": method,
+                        "Mode": mode,
+                        "x": x,
+                        "Cost": cost,
+                        "Iterations": iterations,
+                        "Wall_Clock_Time_s": time_taken,
+                        "Accuracy_Gap": accuracy_gap,
+                        "Speedup": speedup
+                    })
+                    print(f"N={N}, Method={method}, Mode={mode if mode != 'cpu' else 'cpu sequential'}: "
+                          f"x={x:.4f}, Cost={cost:.4f}, Iter={iterations:.1f}, "
+                          f"Wall Clock Time={time_taken:.4f}s, Accuracy Gap={accuracy_gap:.4e}, "
+                          f"Speedup={speedup:.2f}x")
+    # Save results to CSV; Added for persistent data storage and analysis
+    df = pd.DataFrame(results)
+    df.to_csv("performance_data.csv", index=False)
+    # Generate and display only the scaling visualization; Changed from plot_bar_charts to plot_scaling
+    visualize.plot_scaling(df)  # Removed plot_performance call to focus on scaling visualization
+if __name__ == "__main__":
+    main()

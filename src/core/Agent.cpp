@@ -5,21 +5,19 @@
 // agent in the intelligence fabric simulation.
 //
 // Each agent encapsulates a **convex quadratic cost function**:
-//   \( f_i(x) = a_i (x - b_i)^2 \), where:
-//   • \( a_i > 0 \): Ensures strong convexity and unique global minimum.
-//   • \( b_i \): Location of the agent's local minimum.
+// \( f_i(x) = a_i (x - b_i)^2 \), where:
+// • \( a_i > 0 \): Ensures strong convexity and unique global minimum.
+// • \( b_i \): Location of the agent's local minimum.
 //
 // The class provides:
-//   • Cost evaluation: \( f_i(x) \)
-//   • Gradient computation: \( \nabla f_i(x) = 2 a_i (x - b_i) \)
-//   • Local minimum access: \( x^*_i = b_i \)
+// • Cost evaluation: \( f_i(x) \)
+// • Gradient computation: \( \nabla f_i(x) = 2 a_i (x - b_i) \)
+// • Local minimum access: \( x^*_i = b_i \)
 //
 // All methods are `constexpr`-compatible and use double-precision arithmetic
-// for numerical stability in large-scale optimization.  The implementation
+// for numerical stability in large-scale optimization. The implementation
 // follows RAII principles and is exception-safe.
-
 #include "Agent.hpp"
-
 /**
  * @brief Constructs an agent with given quadratic coefficients.
  *
@@ -27,11 +25,10 @@
  * @param b_val Target point \( b_i \) defining the local minimum.
  *
  * The constructor performs direct member initialization for zero-overhead
- * setup.  No validation is performed here; convexity is guaranteed by
+ * setup. No validation is performed here; convexity is guaranteed by
  * `generateAgents()` in util.cpp.
  */
 Agent::Agent(double a_val, double b_val) : a(a_val), b(b_val) {}
-
 /**
  * @brief Evaluates the local quadratic cost at point \( x \).
  *
@@ -39,13 +36,12 @@ Agent::Agent(double a_val, double b_val) : a(a_val), b(b_val) {}
  * @return double Cost value \( f_i(x) = a_i (x - b_i)^2 \).
  *
  * The computation uses explicit multiplication to avoid temporary objects
- * and ensure optimal inlining by the compiler.  The result is non-negative
+ * and ensure optimal inlining by the compiler. The result is non-negative
  * due to the squared term and \( a_i > 0 \).
  */
 double Agent::computeCost(double x) const {
-    return a * (x - b) * (x - b);  // \( f_i(x) = a_i (x - b_i)^2 \)
+return a * (x - b) * (x - b); // \( f_i(x) = a_i (x - b_i)^2 \)
 }
-
 /**
  * @brief Computes the gradient of the local cost with respect to \( x \).
  *
@@ -57,5 +53,5 @@ double Agent::computeCost(double x) const {
  * consensus-based gradient descent.
  */
 double Agent::computeGradient(double x) const {
-    return 2.0 * a * (x - b);  // \( \frac{\partial f_i}{\partial x} = 2 a_i (x - b_i) \)
+return 2.0 * a * (x - b); // \( \frac{\partial f_i}{\partial x} = 2 a_i (x - b_i) \)
 }

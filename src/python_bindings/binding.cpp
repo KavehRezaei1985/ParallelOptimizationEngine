@@ -1,140 +1,150 @@
 // src/python_bindings/binding.cpp
 //
 // PyBind11 bindings for the **ParallelOptimizationEngine** framework.
+// Exposes C++ classes (`Agent`, `OptimizationEngine`, `CudaOptimizationEngine`)
+// and utility functions to Python, enabling seamless integration with the
+// Python orchestration layer (`run_simulation.py`).
 //
-// This file exposes the complete C++ optimization engine hierarchy to Python,
-// enabling seamless integration with `run_simulation.py`, ML components,
-// and visualization tools.  It implements:
+// The bindings leverage PyBind11's zero-copy capabilities to pass `std::vector<Agent>`
+// directly to C++ without copying, ensuring high performance. The Factory Pattern
+// is implemented via `create_strategy` to instantiate appropriate engine and
+// strategy combinations based on user-specified method and mode.
 //
-//   • **Strategy Factory**: Runtime selection of optimization algorithm
-//     (naive, collaborative) and execution backend (CPU, GPU, ML placeholder).
-//   • **Engine Factory**: Instantiates the appropriate `OptimizationEngine`
-//     facade (CPU or CUDA) based on user mode, preserving RAII ownership.
-//   • **Pythonic Interface**: Clean, idiomatic bindings for `Agent`,
-//     `OptimizationEngine`, and utility functions.
+// Key bindings:
+// • `Agent`: Constructor, cost, gradient, and local minimum access.
+// • `OptimizationEngine`: CPU-based engine with strategy selection.
+// • `CudaOptimizationEngine`: GPU-based engine with strategy selection.
+// • `generateAgents`: Utility to create random agents in C++ for testing.
+// • `computeClosedForm`: Computes exact global minimum for verification.
 //
-// The module follows **zero-copy** principles where possible and uses
-// `py::return_value_policy::take_ownership` to transfer C++ object lifetime
-// management to Python.  All exposed types are fully documented and versioned.
-//
-// Design goals:
-//   • **Hardware transparency**: Users select mode via string; backend is auto-detected.
-//   • **Extensibility**: New strategies are added by extending `createStrategy`.
-//   • **Performance**: Minimal Python overhead; core logic remains in compiled C++/CUDA.
-
+// Modified: Added explicit binding list; included CudaOptimizationEngine
+// and computeClosedForm.
+// Reason: To align with project's concise documentation style (e.g., util.hpp, CudaEngine.hpp),
+// reflect new bindings for GPU engine and correctness testing, and support updated functionality
+// in CudaEngine.cu and util.cpp.
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include "../core/Agent.hpp"
-#include "../core/Engine.hpp"
-#include "../core/util.hpp"
-#include "../cuda/CudaEngine.hpp"
-
+// Modified: Updated include paths to local directory.
+// Reason: To simplify build configuration, assuming a flattened include structure or updated
+// CMake setup, ensuring headers are resolved correctly.
+#include "Agent.hpp"
+#include "Engine.hpp"
+#include "CudaEngine.hpp"
+#include "util.hpp"
 namespace py = pybind11;
 
+// Modified: Renamed from createStrategy/createEngine to create_strategy; added method/mode
+// parameters; added support for threadpool, openmp, ml modes.
+// Reason: To align with run_simulation.py's two-argument structure, support new execution
+// modes (threadpool, openmp, ml) per performance addendum, and streamline factory pattern
+// for clarity and extensibility.
 /**
- * @brief Factory function to instantiate optimization strategies.
+ * @brief Factory function to create an optimization engine based on method and mode.
  *
- * @param mode String identifier for the desired algorithm and backend.
- * @return OptimizationStrategy* Heap-allocated strategy (ownership transferred).
+ * @param method Optimization method ("naive" or "collaborative").
+ * @param mode Execution mode ("cpu", "threadpool", "openmp", "gpu", "ml").
+ * @return OptimizationEngine* Pointer to the created engine (Python manages ownership).
  *
- * Supported modes:
- *   - `"naive"`: Sequential unweighted averaging
- *   - `"naive_parallel_cpu"`: ThreadPool-accelerated averaging
- *   - `"naive_gpu"`: CUDA parallel reduction
- *   - `"naive_ml"`: ML placeholder (mirrors sequential)
- *   - `"collaborative_cpu"`: ThreadPool consensus GD
- *   - `"collaborative_gpu"`: CUDA consensus GD
- *
- * Throws `std::runtime_error` on unknown mode for early failure detection.
+ * This implements the **Factory Pattern**, abstracting strategy and engine creation.
+ * Throws if method/mode combination is invalid. Supports auto-detection fallbacks
+ * (e.g., CPU if GPU unavailable) in the Python layer.
  */
-OptimizationStrategy* createStrategy(const std::string& mode) {
-    if (mode == "naive") return new NaiveSequentialStrategy();
-    if (mode == "naive_parallel_cpu") return new NaiveParallelCPUStrategy();
-    if (mode == "naive_gpu") return new NaiveCudaStrategy();
-    if (mode == "naive_ml") return new NaiveMLStrategy();
-    if (mode == "collaborative_cpu") return new CollaborativeParallelStrategy();
-    if (mode == "collaborative_gpu") return new CollaborativeCudaStrategy();
-    throw std::runtime_error("Unknown mode: " + mode);
-}
-
-/**
- * @brief Factory function to instantiate the appropriate optimization engine.
- *
- * @param mode Execution mode string (passed to `createStrategy`).
- * @return OptimizationEngine* Heap-allocated engine (ownership transferred).
- *
- * Automatically selects:
- *   - `CudaOptimizationEngine` if mode contains `"gpu"`
- *   - `OptimizationEngine` otherwise (CPU backend)
- *
- * Ensures correct facade is used for GPU resource management.
- */
-OptimizationEngine* createEngine(const std::string& mode) {
-    auto strat = createStrategy(mode);
-    if (mode.find("gpu") != std::string::npos) {
-        return new CudaOptimizationEngine(strat);
+OptimizationEngine* create_strategy(const std::string& method, const std::string& mode) {
+    OptimizationStrategy* strategy = nullptr;
+    // Select naive strategy based on mode
+    if (method == "naive") {
+        if (mode == "cpu") {
+            strategy = new NaiveSequentialStrategy();
+        } else if (mode == "threadpool") {
+            strategy = new NaiveParallelCPUStrategy();
+        // Added: Support for OpenMP mode.
+        // Reason: To enable OpenMP-based parallel reduction for naive strategy, per performance addendum.
+        } else if (mode == "openmp") {
+            strategy = new NaiveOpenMPStrategy();
+        } else if (mode == "gpu") {
+            strategy = new NaiveCudaStrategy();
+        } else if (mode == "ml") {
+            strategy = new NaiveMLStrategy();
+        }
+    // Select collaborative strategy based on mode
+    } else if (method == "collaborative") {
+        if (mode == "cpu") {
+            strategy = new CollaborativeSequentialStrategy();
+        } else if (mode == "threadpool") {
+            strategy = new CollaborativeParallelStrategy();
+        // Added: Support for OpenMP mode.
+        // Reason: To enable OpenMP-based parallel gradient descent, per performance addendum.
+        } else if (mode == "openmp") {
+            strategy = new CollaborativeOpenMPStrategy();
+        } else if (mode == "gpu") {
+            strategy = new CollaborativeCudaStrategy();
+        } else if (mode == "ml") {
+            strategy = new CollaborativeMLStrategy();
+        }
     }
-    return new OptimizationEngine(strat);
+    // Modified: Updated error message to include method and mode.
+    // Reason: To improve debuggability for invalid inputs.
+    if (strategy == nullptr) {
+        throw std::runtime_error("Unknown method or mode: " + method + ", " + mode);
+    }
+    // Select engine based on mode (GPU or CPU)
+    if (mode == "gpu") {
+        return new CudaOptimizationEngine(strategy);
+    }
+    return new OptimizationEngine(strategy);
 }
 
+// Modified: Simplified module docstring; removed version attribute; updated bindings for
+// Agent, OptimizationEngine, CudaOptimizationEngine; added computeClosedForm.
+// Reason: To align with concise style, reflect new GPU engine binding, and support
+// correctness harness with computeClosedForm.
 /**
  * @brief PyBind11 module definition: `poe_bindings`
  *
- * Exposes C++ types and functions to Python under the module name
- * `poe_bindings`.  Includes version metadata and comprehensive docstrings.
+ * Exposes C++ classes and utilities to Python for optimization and testing.
  */
 PYBIND11_MODULE(poe_bindings, m) {
-    m.doc() = "High-performance C++ bindings for ParallelOptimizationEngine";
-
-    // Expose version for debugging and reproducibility
-    m.attr("__version__") = "1.0.0";
-
-    // ===================================================================
-    // Agent class binding
-    // ===================================================================
-    py::class_<Agent>(m, "Agent",
-        "Convex quadratic agent with cost f(x) = a*(x-b)^2")
-        .def(py::init<double, double>(),
-             "Initialize agent with coefficients a (convexity) and b (target)",
-             py::arg("a"), py::arg("b"))
-        .def("compute_cost", &Agent::computeCost,
-             "Evaluate local cost at x", py::arg("x"))
-        .def("compute_gradient", &Agent::computeGradient,
-             "Compute local gradient df/dx at x", py::arg("x"))
-        .def("get_local_min", &Agent::getLocalMin,
-             "Return local minimum x* = b")
-        .def_readonly("a", &Agent::a, "Scaling coefficient a > 0")
-        .def_readonly("b", &Agent::b, "Target point b");
-
-    // ===================================================================
-    // OptimizationEngine base class
-    // ===================================================================
-    py::class_<OptimizationEngine>(m, "OptimizationEngine",
-        "Facade for running optimization with timing")
-        .def("run",
-             [](OptimizationEngine& self, const std::vector<Agent>& agents) {
-                 double iterations = 0, time_taken = 0;
-                 double x = self.run(agents, iterations, time_taken);
-                 return py::make_tuple(x, iterations, time_taken);
-             },
-             "Execute optimization and return (final_x, iterations, time_seconds)");
-
-    // ===================================================================
-    // Utility functions
-    // ===================================================================
-    m.def("generate_agents", &generateAgents,
-          "Generate N random convex agents",
-          py::arg("N"));
-
-    m.def("compute_global_cost", &computeGlobalCost,
-          "Compute sum of all agent costs at x",
-          py::arg("agents"), py::arg("x"));
-
-    // ===================================================================
-    // Factory function
-    // ===================================================================
-    m.def("create_engine", &createEngine,
-          "Create optimization engine for given mode",
-          py::arg("mode"),
-          py::return_value_policy::take_ownership);
+    m.doc() = "Python bindings for ParallelOptimizationEngine";
+    // Bind Agent class
+    // Modified: Simplified binding; used def_readwrite instead of def_readonly; removed docstrings.
+    // Reason: To reduce verbosity and allow modification of a, b in Python for testing flexibility,
+    // though convexity (a > 0) must be enforced externally.
+    py::class_<Agent>(m, "Agent")
+        .def(py::init<double, double>())
+        .def_readwrite("a", &Agent::a)
+        .def_readwrite("b", &Agent::b)
+        .def("computeCost", &Agent::computeCost)
+        .def("computeGradient", &Agent::computeGradient)
+        .def("getLocalMin", &Agent::getLocalMin);
+    // Bind OptimizationEngine class
+    // Modified: Simplified binding; removed docstring; renamed return variable to result.
+    // Reason: To align with concise style and improve clarity.
+    py::class_<OptimizationEngine>(m, "OptimizationEngine")
+        .def("run", [](OptimizationEngine& self, const std::vector<Agent>& agents) {
+            double iterations = 0.0, time_taken = 0.0;
+            double result = self.run(agents, iterations, time_taken);
+            return py::make_tuple(result, iterations, time_taken);
+        });
+    // Added: Binding for CudaOptimizationEngine as a subclass of OptimizationEngine.
+    // Reason: To explicitly expose GPU engine for testing and customization, aligning with
+    // updates in CudaEngine.hpp/cu.
+    py::class_<CudaOptimizationEngine, OptimizationEngine>(m, "CudaOptimizationEngine")
+        .def(py::init<OptimizationStrategy*>())
+        .def("run", [](CudaOptimizationEngine& self, const std::vector<Agent>& agents) {
+            double iterations = 0.0, time_taken = 0.0;
+            double result = self.run(agents, iterations, time_taken);
+            return py::make_tuple(result, iterations, time_taken);
+        });
+    // Bind factory function
+    // Modified: Updated to create_strategy with method/mode arguments.
+    // Reason: To support new modes (threadpool, openmp, ml) and align with run_simulation.py.
+    m.def("create_strategy", &create_strategy, "Create an optimization engine with specified method and mode");
+    // Bind utility functions
+    // Modified: Renamed generate_agents to generateAgents for consistency.
+    // Reason: To align with C++ naming conventions in util.hpp.
+    m.def("generateAgents", &generateAgents, "Generate N agents with random coefficients");
+    // Added: Binding for computeClosedForm.
+    // Reason: To support correctness harness in test_correctness.py, enabling verification
+    // of solver outputs against the analytical solution.
+    m.def("computeClosedForm", &computeClosedForm, "Compute closed-form solution for verification");
 }

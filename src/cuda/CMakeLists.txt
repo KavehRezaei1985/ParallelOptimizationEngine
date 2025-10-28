@@ -1,24 +1,14 @@
 # src/cuda/CMakeLists.txt
 #
-# Configures the build of the **CUDA GPU acceleration library** (`libcuda_engine.a`)
-# for the **ParallelOptimizationEngine** framework.
+# Configures the build of the CUDA static library (cuda_engine) containing
+# GPU-accelerated components of the **ParallelOptimizationEngine** framework:
+# • CudaEngine.cu – host-side CUDA code for naive and collaborative strategies
+# • kernel.cu – device-side CUDA kernels for gradient computation and reduction
 #
-# This CMake script compiles:
-#   • `CudaEngine.cu` – Host-side orchestration, memory management, kernel launches.
-#   • `kernel.cu`     – Device-side CUDA kernels for parallel gradient computation
-#                       and reduction operations.
-#
-# The resulting **static library** is position-independent (PIC) to enable seamless
-# integration into shared objects (e.g., PyBind11 Python module) and dynamic
-# loading at runtime.
-#
-# Public include directories are exported so that downstream targets can locate
-# `CudaEngine.hpp` and invoke GPU-accelerated strategies via the unified
-# `OptimizationStrategy` interface.
-#
-# CUDA language support is enabled at the top-level `CMakeLists.txt`.  This
-# sub-module assumes `find_package(CUDA REQUIRED)` has already succeeded.
-
+# The library is position-independent (PIC) to support linking into shared
+# objects (e.g., PyBind11 module for Python bindings). Public include paths are
+# exported to allow downstream targets to locate CudaEngine.hpp for invoking
+# GPU-accelerated strategies.
 cuda_add_library(cuda_engine STATIC CudaEngine.cu kernel.cu)
 
 # Export the current source directory as a public include path.
@@ -26,5 +16,12 @@ cuda_add_library(cuda_engine STATIC CudaEngine.cu kernel.cu)
 target_include_directories(cuda_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Enable position-independent code generation.
-# Essential for static library inclusion in shared libraries (e.g., Python extension).
+# Essential for static library inclusion in shared libraries (e.g., Python extension module).
 set_target_properties(cuda_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# Added: Link against the core library using plain signature to match FindCUDA.
+# Reason: To ensure cuda_engine can access core library components (e.g., Agent class,
+# utilities like computeGlobalCost, computeClosedForm), supporting GPU strategy
+# implementation and correctness testing in test_correctness.cpp, which requires
+# both libraries.
+target_link_libraries(cuda_engine core)

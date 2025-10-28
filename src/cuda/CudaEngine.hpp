@@ -1,101 +1,113 @@
 // src/cuda/CudaEngine.hpp
 //
-// Header declaring **GPU-accelerated optimization strategies** and the 
-// **CUDA-specific engine facade** for the **ParallelOptimizationEngine** framework.
+// Header file declaring the **CudaOptimizationEngine** and its strategies
+// for GPU-accelerated optimization in the **ParallelOptimizationEngine** framework.
 //
-// This file extends the core `OptimizationStrategy` interface with CUDA-optimized
-// implementations that leverage high-throughput parallel kernels defined in 
-// `kernel.cu`.  All GPU strategies inherit from the abstract base class 
-// `OptimizationStrategy`, ensuring full compliance with the **Strategy Pattern** 
-// and seamless integration into the polymorphic engine hierarchy.
+// This file extends the **Strategy Design Pattern** to GPU backends, providing
+// polymorphic strategies for naive and collaborative optimization. The
+// **CudaOptimizationEngine** inherits from `OptimizationEngine` and manages
+// CUDA-specific memory and kernel launches.
 //
-// Key components:
-//   • `CollaborativeCudaStrategy`: Consensus gradient descent using 
-//     parallel gradient evaluation and hierarchical reduction.
-//   • `NaiveCudaStrategy`: Single-pass parallel averaging of local minima.
-//   • `CudaOptimizationEngine`: Facade subclass that owns GPU strategy instances 
-//     and integrates with the Python binding layer.
-//
-// The design ensures:
-//   • **Zero host-side overhead** beyond kernel launches and memory transfers.
-//   • **Exception-safe resource management** via RAII in `.cu` implementations.
-//   • **Hardware abstraction** — users interact via the unified `OptimizationEngine` 
-//     interface without GPU-specific knowledge.
-//
-// Include this header only in translation units requiring GPU acceleration.
-// The implementation resides in `CudaEngine.cu` and depends on `kernel.cu`.
-
+// Mathematical context:
+// • Naive: \( x^* = \frac{1}{N} \sum b_i \) via parallel reduction.
+// • Collaborative: Gradient descent on \( F(x) = \sum a_i (x - b_i)^2 \)
+// with diminishing step size \( \eta_k = \eta_0 / k \).
 #ifndef CUDA_ENGINE_HPP
 #define CUDA_ENGINE_HPP
+#include "../core/Engine.hpp" // Adjusted to relative path from src/cuda/ to src/core/ for clarity
+// Added: Include <vector> to support std::vector<Agent> in method signatures.
+// Reason: To ensure self-contained header usage, aligning with modern C++ practices and
+// supporting correctness testing by providing necessary type definitions.
+#include <vector>
 
-#include "../core/Engine.hpp"
-
+// Modified: Simplified class documentation; added explicit constructor.
+// Reason: To align with project's concise documentation style (e.g., util.hpp) and ensure
+// proper initialization in CudaEngine.cu for consistency with implementation.
 /**
- * @class CollaborativeCudaStrategy
- * @brief GPU-accelerated collaborative optimization using consensus gradient descent.
+ * @brief GPU-accelerated naive strategy for parallel unweighted averaging.
  *
- * Implements fixed-step gradient descent on the global cost:
- *   \( F(x) = \sum_{i=1}^N a_i (x - b_i)^2 \)
- * using CUDA kernels for:
- *   - Per-agent gradient computation: \( 2 a_i (x - b_i) \)
- *   - Parallel reduction to compute average gradient
- *
- * Achieves near-linear scaling with \( N \) on NVIDIA GPUs.
- */
-class CollaborativeCudaStrategy : public OptimizationStrategy {
-public:
-    /**
-     * @brief Executes GPU-accelerated gradient descent.
-     *
-     * @param agents     Input ensemble of convex quadratic agents.
-     * @param iterations Output: number of iterations until convergence.
-     * @param time_taken Output: execution time (measured externally).
-     * @return double    Converged shared variable \( x \).
-     */
-    double optimize(const std::vector<Agent>& agents, 
-                    double& iterations, double& time_taken) override;
-};
-
-/**
- * @class NaiveCudaStrategy
- * @brief GPU-accelerated naive strategy: parallel unweighted averaging.
- *
- * Computes:
- *   \( x^* = \frac{1}{N} \sum_{i=1}^N b_i \)
- * using a single parallel reduction kernel over the \( b_i \) values.
- *
- * Ideal for baseline performance comparison and large-scale \( N \).
+ * Computes \( x^* = \frac{1}{N} \sum b_i \) using CUDA kernels for parallel reduction.
  */
 class NaiveCudaStrategy : public OptimizationStrategy {
 public:
+    // Added: Explicit constructor declaration.
+    // Reason: To match implementation in CudaEngine.cu, ensuring proper initialization.
+    NaiveCudaStrategy();
     /**
      * @brief Executes parallel averaging on GPU.
      *
-     * @param agents     Input agent ensemble.
+     * @param agents Input agent ensemble.
      * @param iterations Set to 1.0 (single evaluation).
      * @param time_taken Not used (timing handled by facade).
-     * @return double    Averaged local minima.
+     * @return double Averaged local minima.
      */
-    double optimize(const std::vector<Agent>& agents, 
+    double optimize(const std::vector<Agent>& agents,
                     double& iterations, double& time_taken) override;
 };
 
+// Modified: Simplified class documentation; added explicit constructor.
+// Reason: To align with project's concise style and reflect diminishing step size in
+// CudaEngine.cu, ensuring consistency with updated convergence policy.
 /**
- * @class CudaOptimizationEngine
+ * @brief GPU-accelerated collaborative strategy using gradient descent.
+ *
+ * Performs gradient descent on \( F(x) = \sum a_i (x - b_i)^2 \) with diminishing
+ * step size \( \eta_k = \eta_0 / k \).
+ */
+class CollaborativeCudaStrategy : public OptimizationStrategy {
+public:
+    // Added: Explicit constructor declaration.
+    // Reason: To match implementation in CudaEngine.cu, ensuring proper initialization.
+    CollaborativeCudaStrategy();
+    /**
+     * @brief Executes GPU-accelerated gradient descent.
+     *
+     * @param agents Input ensemble of convex quadratic agents.
+     * @param iterations Output: number of iterations until convergence.
+     * @param time_taken Output: execution time (measured externally).
+     * @return double Converged shared variable \( x \).
+     */
+    double optimize(const std::vector<Agent>& agents,
+                    double& iterations, double& time_taken) override;
+};
+
+// Modified: Simplified documentation; added destructor and run method; renamed parameter
+// to strategy; added private strategy member.
+// Reason: To align with concise style, match CudaEngine.cu implementation, and ensure
+// explicit interface definition for clarity and maintainability.
+/**
  * @brief Facade for GPU-accelerated optimization engines.
  *
- * Owns a pointer to a CUDA strategy and delegates execution to 
- * `OptimizationEngine::run()`.  Enables polymorphic use within the 
-// Python binding layer while encapsulating GPU resource lifecycle.
+ * Manages CUDA-specific strategies and delegates to OptimizationEngine::run().
  */
 class CudaOptimizationEngine : public OptimizationEngine {
 public:
+    // Modified: Renamed parameter from strat to strategy.
+    // Reason: To improve readability and align with naming conventions in CudaEngine.cu.
     /**
      * @brief Constructs the CUDA engine with a GPU strategy.
      *
-     * @param strat Heap-allocated CUDA strategy (ownership transferred).
+     * @param strategy Heap-allocated CUDA strategy (ownership transferred).
      */
-    CudaOptimizationEngine(OptimizationStrategy* strat);
+    CudaOptimizationEngine(OptimizationStrategy* strategy);
+    // Added: Explicit destructor declaration.
+    // Reason: To match CudaEngine.cu implementation, ensuring clear cleanup (handled by base class).
+    ~CudaOptimizationEngine() override;
+    // Added: Explicit run method declaration.
+    // Reason: To match CudaEngine.cu implementation, clarifying delegation to base class for maintainability.
+    /**
+     * @brief Executes the CUDA-based optimization.
+     *
+     * @param agents Input agent ensemble.
+     * @param iterations Output: number of iterations.
+     * @param time_taken Output: execution time in seconds.
+     * @return double Final optimized \( x \).
+     */
+    double run(const std::vector<Agent>& agents,
+               double& iterations, double& time_taken) override;
+private:
+    // Added: Explicit strategy member declaration.
+    // Reason: To clarify the role of the strategy pointer, though redundant with base class, for documentation purposes.
+    OptimizationStrategy* strategy;
 };
-
 #endif // CUDA_ENGINE_HPP
